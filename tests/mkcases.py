@@ -215,6 +215,11 @@ c("special_random_unevaluated_dq", "# expect: reject\nA=\"${PRESET:+x}${PRESET-$
 c("special_random_not_expanded", "A='$RANDOM' # $RANDOM ${EPOCHSECONDS}\nB=\\$RANDOM\"\\${EPOCHREALTIME}\"\n")
 c("tilde_pattern_home_glob", "# expect: reject\nHOME='*'\nA=abc\nB=${A##~}\n")
 c("tilde_pattern_home_plain", "HOME=/h\nA=/h/x\nB=${A#~}\nC=${A#~/}\n")
+c("tilde_after_escaped_colon", "# expect: reject\nA=x\\:~/y\n")
+c("tilde_after_escaped_colon_cont", "# expect: reject\nA=x\\:\\\n~/y\n")
+c("tilde_after_escaped_colon_pattern", "V='x:~'\nA=${V%\\:~}\n")
+c("tilde_after_escaped_colon_brace_word", "# expect: reject\nB=${UNSET-x\\:~/y}\n")
+c("tilde_after_quoted_colon", "A=x\":\"~/y\nB=x':'~/y\nC=x:\"~\"/y\nD=x${EMPTY}:~/y\nE=x:${EMPTY}~/y\n")
 # character semantics need a UTF-8 locale that setlocale() accepts
 c("locale_missing_utf8_length", "# env: LC_ALL=xx_YY.UTF-8\n# expect: unsupported\nV='é'\nA=${#V}\n")
 c("locale_missing_utf8_pattern", "# env: LC_ALL=xx_YY.UTF-8\n# expect: unsupported\nV='été'\nA=${V#?}\n")

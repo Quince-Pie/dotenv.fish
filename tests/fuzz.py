@@ -42,7 +42,7 @@ def word(rnd, depth, ctx="u"):
         if k < 0.22:
             parts.append(plain(rnd))
         elif k < 0.32:
-            parts.append("\\" + rnd.choice(list("ab $'\"\\#;~*n\n") + ["é"]))
+            parts.append("\\" + rnd.choice(list("ab $'\"\\#;~*n\n:") + ["é"]))
         elif k < 0.45:
             parts.append("'" + "".join(rnd.choice(SQ_CHARS) for _ in range(rnd.randint(0, 4))) + "'")
         elif k < 0.60:

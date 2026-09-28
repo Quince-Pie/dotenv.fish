@@ -902,6 +902,7 @@ function __dotenv_tildes -S -a 0mode
     set -l 0tp 0 # inside a tilde prefix
     set -l 0login ''
     set -l 0colon 0 # previous piece was a colon
+    set -l 0esc 0 # previous piece was an escaped colon
     set -l 0q 1 2 3 4 5 6 7 8
     set -q K[9]; and set 0q (__dotenv_seq (count $K))
     for 0p in $0q
@@ -930,6 +931,8 @@ function __dotenv_tildes -S -a 0mode
         set 0tl 0
         set -l 0wascolon $0colon
         set 0colon 0
+        set -l 0wasesc $0esc
+        set 0esc 0
         switch $0k
             case '~'
                 if test $0wastl = 1
@@ -939,10 +942,15 @@ function __dotenv_tildes -S -a 0mode
                 else if test $0wascolon = 1 -a $0mode = u
                     set 0err "'~' after ':' inside \${…} is expanded by some shells and not by others"
                     return 1
+                else if test $0wasesc = 1
+                    set 0err "'~' after an escaped ':' is expanded by zsh and not by other shells"
+                    return 1
                 end
             case :
                 set 0colon 1
                 test $0mode = a; and set 0tl 1
+            case \\
+                test "$0v" = :; and set 0esc 1
         end
         set -a 0K $0k
         set -a 0V $0v
