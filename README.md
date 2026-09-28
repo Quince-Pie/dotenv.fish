@@ -74,6 +74,8 @@ Examples of what is refused, and why:
 | `A=${PRESET-$RANDOM}` | busybox exports RANDOM once it merely reads this |
 | `A=${UNSET-"a\}b"}` | `\}` in `"…"` inside `${…}` is an escape in dash, busybox and ksh93 only |
 | `A=x\:~/y` | zsh expands a tilde after an escaped colon, the others do not |
+| `A=${V#@(p)}`, `A=${V%%|*}` | mksh and ksh read `(`, `|` and `)` in a pattern as an extended pattern (quoted, they work) |
+| `A=${X:-<(x)}`, `A="${X:-<(}"` | bash reads a process substitution there, and runs it |
 | `A=~/x` with `HOME=/h/` in the environment | `//x` in some shells, `/x` in others |
 | a blank line in a file with CRLF line endings | a command named CR (the message says to convert the file; otherwise values keep a trailing CR, as in a shell) |
 
@@ -163,13 +165,14 @@ deviate. See the list below; each deviation has a case of its own.
 
 Evidence for the final version:
 
-* `tests/cases`: 240 hand-written cases, all `ok`, `ok-err`, `ok-rej` or
-  `ok-unsup` (`tests/mkcases.py`, then `tests/difftest.py tests/cases`).
+* `tests/cases`: 260 hand-written cases, all `ok`, `ok-err`, `ok-rej` or
+  `ok-unsup` (125, 19, 85 and 32; `tests/mkcases.py`, then
+  `tests/difftest.py tests/cases`).
 * `tests/fuzz.py`: a grammar-based generator. It mixes valid constructs
   with near misses, and inserts line continuations and stray characters at
   random. Every campaign ran against the version committed at the time.
   Every finding was fixed (or, for a shell's deviation, annotated), and the
-  next campaign ran on the fixed version (see FUZZ_TABLE below).
+  next campaign ran on the fixed version (table below).
 * `tests/specials.py`: 210 variable names that some shell sets or treats
   specially (from each shell's startup variables and manuals). Each is
   assigned (3 values), referred to while unset and while inherited
@@ -179,7 +182,23 @@ Evidence for the final version:
   atomicity, messages and line numbers, options, standard input, `--print`
   round trips, fish-specific refusals, independence from `IFS`.
 
-FUZZ_TABLE
+| campaign | files | MISMATCH | ACCEPT | what the findings were |
+| --- | ---: | ---: | ---: | --- |
+| 1 | 1,500 | 0 | 12 | reference-shell deviations (now annotated or refused) |
+| 2 | 2,500 | 0 | 2 | dash and yash on `$'…'` inside `${…}` words (refused since) |
+| 3 | 2,500 | 0 | 1 | yash on quotes in a nested `${…}` within `"…"` (refused since) |
+| 4 | 3,000 | 1 | 4 | `$NAME\`-newline-letter lengthened the name; `\}` in `"…"` in `${…}` |
+| 5 | 3,000 | 1 | 0 | `%\`-newline-`%` read as `%` instead of `%%` |
+| 6 | 4,000 | 0 | 5 | non-POSIX `${…}` forms in unevaluated words; quotes in nested `${…}` |
+| 7 | 4,000 | 0 | 0 | |
+| 8 | 5,000 | 0 | 5 | busybox exports RANDOM on reading `$RANDOM`; yash and tilde in patterns |
+| 9 | 5,000 | 0 | 0 | |
+| 10 | 5,000 | 0 | 0 | |
+| 11 | 6,000 | 0 | 1 | zsh expands `~` after `\:` |
+| 12 | 8,000 | 0 | 0 | |
+| 13 | 8,000 | 0 | 1 | bash runs `<(…)` inside `${…}` as a process substitution |
+| 14 | 8,000 | 0 | 0 | |
+| 15 | 8,000 | 0 | 0 | final version |
 
 Deviations of the reference shells that the tests account for:
 
@@ -192,20 +211,25 @@ Deviations of the reference shells that the tests account for:
   `"…"` as a quote.
 * zsh (sh emulation) and ksh2020: expand `export` operands after the
   command's prefix assignments. zsh also has no `$'\cX'`.
-* bash: brace-expands `export` operands.
+* bash: brace-expands `export` operands; takes an unquoted `<(` or `>(`
+  inside `${…}` as a process substitution (such files are refused).
 * yash: reads single quotes as quotes in a `${…}` nested in a double-quoted
   `${x-…}` word, and a tilde expansion as a pattern; rejects bytes ≥ 0x80
   in glibc's C locale. Such inputs are refused, or the case is marked.
 * dash and busybox: expand a nested tilde in some never-evaluated words.
+* mksh and ksh93: extended patterns (`@(…)`, `*(…)`, `a|b`) even in POSIX
+  mode (refused); zsh: a tilde after `\:` (refused).
 
 ## Performance
 
 Method: `bench/run.sh REPS` runs one fresh fish process per workload
 (`bench/gen.py`) and calls each loader in batches of B calls, sized to take
 about 60 ms, after a warm-up. It reports the median, minimum and maximum
-per-call time over REPS batches. Machine: AMD Ryzen 9 9950X3D, `performance`
-governor, benchmark process pinned to one core (`taskset -c 6`), desktop
-otherwise idle (load ≈ 1.7 of 32 threads).
+per-call time over REPS batches (REPS = 9 here). Machine: AMD Ryzen 9
+9950X3D (32 threads), Linux 6.18, `performance` governor. The benchmark
+process was pinned to one core (`taskset -c 6`) on a desktop with a browser
+open (load average 3.7–4.0 during the run). fish 4.9.3, dash 0.5.13.3,
+bash 5.3p9.
 
 Loaders compared:
 
@@ -219,7 +243,43 @@ Loaders compared:
   but wrong for quoting, escapes, expansions, multi-line values and `#`
   inside values.
 
-PERF_TABLE
+| workload | dotenv | dash | bash | naive | dotenv vs dash |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| small: 20 literal assignments | 313 µs | 3.25 ms | 4.08 ms | 1.21 ms | 10.4× faster |
+| medium: 100 literal assignments | 567 µs | 4.50 ms | 5.45 ms | 5.91 ms | 7.9× faster |
+| large: 1000 literal assignments | 4.79 ms | 18.93 ms | 23.63 ms | 58.75 ms | 4.0× faster |
+| refs: 100 values, 20% with `$X`/`${X}`/`${X:-d}` | 4.05 ms | 4.62 ms | 5.54 ms | 5.75 ms | 1.1× faster |
+| heavy: 100 values, all expansions, patterns, `$'…'`, escapes | 32.62 ms | 4.61 ms | 5.58 ms | 5.81 ms | 7.1× slower |
+| realistic: a typical application `.env` (36 lines) | 1.58 ms | 3.30 ms | 4.20 ms | 1.53 ms | 2.1× faster |
+
+Median per call over 9 batches; the largest max/min ratio of any cell is 1.065.
+
+Cost per construct (`bench/micro.fish`, median of 5 batches of 60 calls):
+
+| construct (20 per file) | per file | per value beyond a literal |
+| --- | ---: | ---: |
+| `V="literal value"` | 306 µs |  |
+| `V="${BASE}/data/0"` | 2470 µs | 108 µs |
+| `V=$BASE/x/0` | 2458 µs | 108 µs |
+| `V="${MISSING:-default 0}"` | 2883 µs | 129 µs |
+| `V=${MISSING:-d0}` | 2862 µs | 128 µs |
+| `V=~/x/0` | 3116 µs | 141 µs |
+| `V="a\"b\"0"` | 2248 µs | 97 µs |
+| `V=$'tab\there'` | 4598 µs | 215 µs |
+| `V=${URL#*://}` | 3605 µs | 165 µs |
+
+The tables show calls in a warm session. Once per session, fish parses
+the function file when `dotenv` is first used: 1.3 ms. Measured with
+hyperfine over 200 runs, `fish -c 'source functions/dotenv.fish'` takes
+2.11 ms against 0.77 ms for `fish -c true`. The first call then takes
+1.8 ms for `realistic.env` (3.95 ms in total).
+
+In short, dotenv is the fastest of the measured loaders on files made
+mostly of literal assignments, 4–10× faster than letting dash source them.
+On the realistic file it is 2.1× faster than dash, and within 4% of the
+naive loop, which gets such files wrong. On files made of expansions only
+(`heavy`), it is about 7× slower than dash: each expansion is interpreted
+in fish script, since the file is never executed.
 
 ## Design
 
@@ -234,7 +294,12 @@ assignments between them are appended in bulk, and only the remaining
 commands are interpreted, word by word, in POSIX order (2.9.1). Finally
 all variables are assigned by a single `read` that splits on a delimiter
 absent from every value. Files with only literal assignments use a smaller
-grammar and skip the interpretation entirely.
+grammar and skip the interpretation entirely. Within the interpretation,
+the common word shapes have fast paths of one regex match each. These are
+interpolation (`"${A}/x"`), defaults (`${A:-x}`), patterns made of literal
+text and `*` (`${URL#*://}`), and `"…"` with backslash escapes. Every other
+word goes through a general interpreter, piece by piece. Both give the same
+results; the corpus and the fuzzer exercise both.
 
 Cost model: a fish statement costs ~1.5–3 µs, a command substitution
 ~10–17 µs, an external command ~0.5–1 ms. So the implementation avoids
@@ -246,7 +311,8 @@ Alternatives that were considered and rejected:
 
 * Delegating to `sh` (bass, replay.fish, foreign-env). It executes the
   file, so a `.env` becomes arbitrary code. It inherits whichever shell's
-  deviations, and costs a fork and exec (≈3.5 ms) even for trivial files.
+  deviations, and costs a fork and exec (≈3.2 ms here) even for trivial
+  files.
 * Translating to fish code and `eval`-ing it. The same risk as delegation
   wherever the escaping is imperfect.
 * Line-oriented parsing, as in most fish plugins and many dotenv libraries
@@ -268,8 +334,9 @@ Alternatives that were considered and rejected:
   versions above. Other shells or versions may maintain more names.
 * On standard input, a NUL byte that is the very last byte cannot be told
   apart from the end of the input.
-* Expansion-heavy files take about 0.2–0.4 ms per expansion. That is
-  slower than sourcing them in dash, which is not exact.
+* Each expansion costs about 0.1–0.2 ms (table above). On files made
+  mostly of expansions, that is slower than sourcing them in dash, which is
+  neither exact nor safe.
 * Verified on Linux (glibc) with fish 4.9.3 only.
 
 ## Repository
