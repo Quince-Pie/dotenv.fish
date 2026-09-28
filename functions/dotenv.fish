@@ -16,6 +16,10 @@
 # command substitutions would (and they cost ~10 µs each).
 
 function dotenv --description 'Load POSIX .env files into the environment (as `set -a; . FILE` would)'
+    # With an empty IFS (which a .env file may set), fish splits the output
+    # of command substitutions into lines only where it comes from `string`
+    # or `path`; do not depend on that.
+    set -l IFS \n\ \t
     set -l 0print 0
     set -l 0files
     while set -q argv[1]
@@ -187,7 +191,13 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             # finds data only if the first stopped at a NUL byte (one that is
             # the very last byte cannot be told apart from the end of input).
             read -z 0text
-            if read -z -l 0more; or set -q 0more[1]
+            if test $status = 122
+                printf 'dotenv: standard input exceeds $fish_read_limit\n' >&2
+                return 1
+            end
+            set -q 0text[1]; or set 0text ''
+            read -z -l 0more
+            if test $status != 1; or set -q 0more[1]
                 printf 'dotenv: standard input contains a NUL byte\n' >&2
                 return 1
             end
@@ -393,8 +403,11 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
 
     set -q 0cn[1]; or return 0
 
-    # fish refuses to set these; umask would change the process umask.
-    set -l 0bad (string match -r -- '^(?:FISH_VERSION|PWD|SHLVL|_|__fish_(?:bin|cache|config|data|help|man|sysconf|user_data)_dir|fish_(?:kill_signal|killring|pid|terminal_color_theme)|history|hostname|pipestatus|status|status_generation|umask|version)$' $0cn '')
+    # fish refuses to set these; umask would change the process umask; fish
+    # itself sets CMD_DURATION (unexported) after each command, dirprev and
+    # dirnext on cd, last_pid and fish_bind_mode, and rewrites PATH when
+    # fish_user_paths changes: none would keep the value the file gives.
+    set -l 0bad (string match -r -- '^(?:FISH_VERSION|PWD|SHLVL|_|__fish_(?:bin|cache|config|data|help|man|sysconf|user_data)_dir|fish_(?:kill_signal|killring|pid|terminal_color_theme|bind_mode|user_paths)|history|hostname|pipestatus|status|status_generation|umask|version|CMD_DURATION|dirprev|dirnext|last_pid)$' $0cn '')
     if set -q 0bad[1]
         printf 'dotenv: cannot set %s: it is a read-only or special fish variable\n' $0bad[1] >&2
         return 1
@@ -483,6 +496,7 @@ end
 
 # 1 … $argv[1], one per line, without running the external `seq`.
 function __dotenv_seq -a 0n
+    set -l IFS \n\ \t
     test $0n -gt 0; and string split -f1 ' ' -- (string match -ran . -- (string repeat -n $0n x))
 end
 

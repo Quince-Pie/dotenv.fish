@@ -152,6 +152,30 @@ set msg (printf 'HOME=/h/\n' | dotenv - 2>&1)
 check 'HOME canonicalization refused' string match -q -- '*would store HOME*' "$msg"
 set msg (printf 'PATH=/bin::/usr/bin\n' | dotenv - 2>&1)
 check 'empty PATH entry refused' string match -q -- '*would store PATH*' "$msg"
+for 0nm in fish_user_paths CMD_DURATION dirprev last_pid fish_bind_mode
+    set msg (printf '%s=/x\n' $0nm | dotenv - 2>&1)
+    check "fish-maintained $0nm refused" string match -q -- '*read-only or special fish*' "$msg"
+end
+set msg (printf 'RANDOM=1\n' | dotenv - 2>&1)
+check 'shell-maintained RANDOM refused' string match -q -- '*some shells maintain it*' "$msg"
+set -e HOSTNAME
+set msg (printf 'A=$HOSTNAME\n' | dotenv - 2>&1)
+check 'HOSTNAME not in the environment refused' string match -q -- '*not in the environment*' "$msg"
+printf 'export IFS\n' | dotenv -
+same 'export IFS exports the default' "$IFS" ' '\t\n
+set -gu IFS \n' '\t # (fish's own value, unexported)
+# dotenv does not depend on the session's IFS (empty IFS stops fish from
+# splitting command substitutions)
+set -gx DOTENV_T1 'p q'
+set -g IFS ''
+printf 'IFS_A="x y"\nIFS_B=${IFS_A%% *}\nexport IFS_C=3 IFS_D=4\nIFS_E=${DOTENV_T1%% *}\n' | dotenv -
+set -g IFS \n' '\t
+same 'works with an empty IFS' "$IFS_B:$IFS_D:$IFS_E" x:4:p
+set -g fish_read_limit 8
+printf 'LIMIT_A=0123456789\n' | dotenv - 2>/dev/null
+check 'stdin over $fish_read_limit is an error' test $status -eq 1
+set -e fish_read_limit
+check_not 'nothing assigned over the limit' set -q LIMIT_A
 set -U __dotenv_universal_probe universal
 printf '__dotenv_universal_probe=global\n' | dotenv -
 same 'universal variable untouched' (set -S __dotenv_universal_probe | string match -r 'universal.*' | string match -q '*universal*'; and echo yes) yes
