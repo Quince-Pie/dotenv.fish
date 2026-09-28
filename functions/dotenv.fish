@@ -84,10 +84,11 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     set -l 0gap '(?>(?1)*+(?|(?<s>;)(?1)*+(?2)?+(?:\n(?:[\x20\t\n]|\x5c\n|(?2))*+)?+
                    |(?2)?+(?<s>\n)(?:[\x20\t\n]|\x5c\n|(?2))*+
                    |(?2)?+(?=\z))?+)'
-    # x: `export ` prefix. n/v: an assignment whose value needs no decoding
+    # x: `export ` prefix (a real blank must follow: `export\<newline>A=1`
+    # assigns exportA). n/v: an assignment whose value needs no decoding
     # beyond removing one pair of quotes. n/r: any other assignment (raw
     # value). w: any other word. e: text that cannot be tokenized.
-    set -l 0word '(?:(?<x>export(?1)++(?:--(?1)++)?+)?+
+    set -l 0word '(?:(?<x>export(?:\x5c\n)*+[\x20\t](?1)*+(?:--(?:\x5c\n)*+[\x20\t](?1)*+)?+)?+
            (?<n>[A-Za-z_][A-Za-z0-9_]*+)=
            (?:(?|(?<v>(?!~)(?:[^\x20\t\n;&|<>()\x5c\x27"$`:\x{A0}\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]++|:(?!~))*+)
                 |\x27(?<v>[^\x27]*+)\x27
@@ -97,6 +98,15 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
           |(?<w>(?11))
           |(?<e>[^\n]++))'
     set -l 0re $0def'\G'$0gap$0word
+    set -l 0lite '(?x)\G(?>[\x20\t]*+(?|(?<s>;)[\x20\t]*+(?:\#[^\n]*+)?+(?:\n(?:[\x20\t\n]|\#[^\n]*+)*+)?+
+                   |(?:\#[^\n]*+)?+(?<s>\n)(?:[\x20\t\n]|\#[^\n]*+)*+
+                   |(?:\#[^\n]*+)?+(?=\z))?+)
+        (?:(?<x>export[\x20\t]++)?+(?<n>[A-Za-z_][A-Za-z0-9_]*+)=
+           (?|(?<v>(?!~)(?:[^\x20\t\n;&|<>()\x5c\x27"$`:\x{A0}\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]++|:(?!~))*+)
+             |\x27(?<v>[^\x27]*+)\x27
+             |"(?<v>[^"\x5c$`]*+)")
+           (?=[\x20\t\n;]|\z)
+          |(?<e>[\s\S]))'
     # Pieces of a word outside "…" (K: kind, V: text) and inside "…".
     set -l 0pu $0def'\G(?|(?<K>)(?<V>[^\x5c\x27"$`~:/]++)
         |(?<K>[~:/])(?<V>)
@@ -200,7 +210,13 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             set -l r
             set -l w
             set -l e
-            string match -raq -- $0re $0text 2>/dev/null
+            # Most files contain only literal assignments, comments and blank
+            # lines. This grammar is the corresponding subset of $0re (no
+            # line continuations, no `export --`); on anything else it leaves
+            # text in e, and the full tokenizer runs instead.
+            string match -raq -- $0lite $0text 2>/dev/null
+            and not string length -q -- $e ''
+            or string match -raq -- $0re $0text 2>/dev/null
             if test $status -gt 1
                 set 0simple 2
             else if string length -q -- $r $w $e ''
@@ -331,7 +347,8 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     # fish rewrites some values on assignment: it canonicalizes HOME (runs of
     # slashes, a trailing slash) and turns empty PATH/CDPATH entries into `.`.
     # The environment would then differ from the shell's, so refuse instead.
-    for 0nm in HOME PATH CDPATH
+    contains -- HOME $0cn; or contains -- PATH $0cn; or contains -- CDPATH $0cn
+    and for 0nm in HOME PATH CDPATH
         set -l 0j (contains -i -- $0nm $0cn[-1..1])
         set -q 0j[1]; or continue
         set -l 0rv $0cv[-1..1]
@@ -928,6 +945,11 @@ function __dotenv_param -S -a 0body 0ctx
             end
         case '*'
             # % %% # ##: remove the smallest/largest suffix/prefix.
+            if contains -- "$Bo" % '#'; and string match -rq -- '\A(?:\x5c\n)++'$Bo "$Bw"
+                # With the continuation removed, `%\<newline>%` is `%%`.
+                set 0err "line continuation inside the operator of \${$Bn$Bo…} is not supported"
+                return 1
+            end
             set -l 0star '.*'
             test "$Bo" = '#'; and set 0star '.*?'
             __dotenv_pattern "$Bw" $0star; or return 1

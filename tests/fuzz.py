@@ -115,10 +115,21 @@ def document(rnd):
         text += "\n"
     return text
 
+def mutate(rnd, text):
+    """Insert line continuations (and a few other characters) at random
+    positions: a continuation is removed before tokenization, so it may land
+    inside any token and must never change a result silently."""
+    for _ in range(rnd.randint(1, 3)):
+        i = rnd.randint(0, len(text))
+        text = text[:i] + rnd.choice(["\\\n", "\\\n", "\\\n", "~", ":", "}", "{", "\\"]) + text[i:]
+    return text
+
 def run(seed_n):
     seed, n = seed_n
     rnd = random.Random(seed)
     text = document(rnd)
+    if rnd.random() < 0.35:
+        text = mutate(rnd, text)
     env = ""
     nonconf = set()
     if rnd.random() < 0.15:
