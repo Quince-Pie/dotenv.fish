@@ -27,7 +27,9 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             case --
                 set -a 0files $argv[2..-1]
                 break
-            case '-?*'
+            case -
+                set -a 0files -
+            case '-*'
                 printf 'dotenv: unknown option: %s\n' $argv[1] >&2
                 return 2
             case '*'
@@ -132,7 +134,14 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     for 0f in $0files
         set -l 0text
         if test "$0f" = -
-            set 0text (string split0)
+            # Only `read` sees a function's standard input. A second read
+            # finds data only if the first stopped at a NUL byte (one that is
+            # the very last byte cannot be told apart from the end of input).
+            read -z 0text
+            if read -z -l 0more; or set -q 0more[1]
+                printf 'dotenv: standard input contains a NUL byte\n' >&2
+                return 1
+            end
         else if test -d "$0f"
             printf 'dotenv: %s: is a directory\n' (__dotenv_vis $0f) >&2
             return 1
@@ -145,15 +154,15 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             return 1
         else
             set 0text (string split0 <$0f)
-        end
-        switch $status
-            case 0
-                # string split0 only succeeds if it split something.
-                printf 'dotenv: %s: file contains a NUL byte\n' (__dotenv_vis $0f) >&2
-                return 1
-            case 122
-                printf 'dotenv: %s: file exceeds $fish_read_limit\n' (__dotenv_vis $0f) >&2
-                return 1
+            switch $status
+                case 0
+                    # string split0 only succeeds if it split something.
+                    printf 'dotenv: %s: file contains a NUL byte\n' (__dotenv_vis $0f) >&2
+                    return 1
+                case 122
+                    printf 'dotenv: %s: file exceeds $fish_read_limit\n' (__dotenv_vis $0f) >&2
+                    return 1
+            end
         end
         # Shell input must be text (2.3, XBD 3.387): in a UTF-8 locale, bytes
         # that are not UTF-8 (kept by fish as U+F600…U+F6FF) are undefined.
