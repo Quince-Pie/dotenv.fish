@@ -24,8 +24,10 @@ SHELLS = {
 
 SCRIPT = 'set -a; . "$1" || exit 97; exec "$2" -0'
 
+# dotenv runs the POSIX `locale` utility to learn the shell's character set;
+# the oracle's PATH must provide it (bin/locale, see bin/README)
 def base_env(extra=None):
-    e = {"HOME": "/home/tester", "PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8",
+    e = {"HOME": "/home/tester", "PATH": "/usr/bin:/bin:" + os.path.abspath(BIN), "LC_ALL": "C.UTF-8",
          "PWD": "/", "PRESET": "preset value", "EMPTY": ""}
     if extra:
         e.update(extra)

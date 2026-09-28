@@ -215,6 +215,10 @@ c("special_random_unevaluated_dq", "# expect: reject\nA=\"${PRESET:+x}${PRESET-$
 c("special_random_not_expanded", "A='$RANDOM' # $RANDOM ${EPOCHSECONDS}\nB=\\$RANDOM\"\\${EPOCHREALTIME}\"\n")
 c("tilde_pattern_home_glob", "# expect: reject\nHOME='*'\nA=abc\nB=${A##~}\n")
 c("tilde_pattern_home_plain", "HOME=/h\nA=/h/x\nB=${A#~}\nC=${A#~/}\n")
+# character semantics need a UTF-8 locale that setlocale() accepts
+c("locale_missing_utf8_length", "# env: LC_ALL=xx_YY.UTF-8\n# expect: unsupported\nV='é'\nA=${#V}\n")
+c("locale_missing_utf8_pattern", "# env: LC_ALL=xx_YY.UTF-8\n# expect: unsupported\nV='été'\nA=${V#?}\n")
+c("locale_utf8_length", "# nonconforming: busybox,mksh\nV='été'\nA=${#V}\nB=${V%?}\n")
 # --- commands / errors ---------------------------------------------------------------------
 c("e_command", "A=1\nls\n")
 c("e_command_after_assign", "A=1 cmd arg\n")

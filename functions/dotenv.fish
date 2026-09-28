@@ -1121,12 +1121,18 @@ function __dotenv_chars -S -a 0val
     end
     __dotenv_locale_fixed LC_CTYPE; or return 1
     if test -z "$0utf8"
-        __dotenv_locale LC_CTYPE
+        # A shell gets its character set from setlocale() with this
+        # environment; a locale that is not installed leaves it in the C
+        # locale. The POSIX locale utility, run with the same environment,
+        # reports exactly that (and complains if any category fails).
         set 0utf8 0
-        string match -rqi -- 'utf-?8' $0res; and set 0utf8 1
+        if command -q locale
+            set -l 0cm (command locale charmap 2>&1)
+            test "$0cm" = UTF-8; and set 0utf8 1
+        end
     end
     if test $0utf8 = 0
-        set 0err "character semantics of non-ASCII text depend on a locale that is not UTF-8"
+        set 0err "character semantics of non-ASCII text need the shell's locale to be UTF-8, which `locale charmap` does not confirm"
         return 1
     end
     return 0
