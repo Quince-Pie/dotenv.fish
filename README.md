@@ -166,7 +166,7 @@ deviate. See the list below; each deviation has a case of its own.
 Evidence for the final version:
 
 * `tests/cases`: 260 hand-written cases, all `ok`, `ok-err`, `ok-rej` or
-  `ok-unsup` (125, 19, 85 and 32; `tests/mkcases.py`, then
+  `ok-unsup` (124, 19, 85 and 32; `tests/mkcases.py`, then
   `tests/difftest.py tests/cases`).
 * `tests/fuzz.py`: a grammar-based generator. It mixes valid constructs
   with near misses, and inserts line continuations and stray characters at
