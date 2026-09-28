@@ -74,7 +74,7 @@ SMTP_PORT=587
 # Paths
 DATA_DIR=${HOME}/.local/share/my-service
 LOG_DIR="${DATA_DIR}/logs"
-export PATH="$HOME/.local/bin:$PATH"
+export TOOLS_PATH="$HOME/.local/bin:$PATH"
 
 # Keys
 JWT_SECRET=5f4dcc3b5aa765d61d8327deb882cf99

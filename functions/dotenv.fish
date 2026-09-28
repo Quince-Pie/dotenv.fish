@@ -197,7 +197,7 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         begin
             set -l q
             string match -raq -- '\$\{?\#?(?<q>[A-Za-z_][A-Za-z0-9_]*+)' $0text
-            set -f 0refs $q HOME LC_ALL LC_CTYPE LC_COLLATE LANG
+            set -f 0refs (path sort -u -- $q HOME LC_ALL LC_CTYPE LC_COLLATE LANG)
         end
         for 0nm in $0refs
             contains -- $0nm $0en $0eu; and continue
@@ -216,24 +216,45 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             end
         end
 
+        # One character per item: A/a assignment with a literal value, P/p the
+        # same after `export`, B/b and Q/q other assignments, W/w other words,
+        # E a syntax error; upper case starts a command. Only commands that
+        # are not literal assignments are run one by one; runs of literal
+        # assignments between them are appended as slices.
+        set -l 0n (count $0N)
+        set -l 0sig (string sub -l $0n -- (string replace -ra -- $0re '${e:+E:${w:+${s:+W:w}:${r:+${x:+${s:+Q:q}:${s:+B:b}}:${x:+${s:+P:p}:${s:+A:a}}}}}' $0text)[1])
+        if string match -q -- '*E*' $0sig
+            set -l 0i (string match -rn -- E $0sig | string split -f1 ' ')
+            __dotenv_fail $0f (__dotenv_line $0i) (__dotenv_syntax $0E[$0i])
+            return 1
+        end
+        # First and last item of each command that needs running.
+        set -l 0cs (string match -ran -- '[BQW]|[AP](?=[a-z]*[bqw])' $0sig | string split -f1 ' ')
+        set -l 0ce (string match -ran -- '(?:[BQW]|[AP](?=[a-z]*[bqw]))(?:[a-z]*\K[a-z]|(?![a-z]))' $0sig | string split -f1 ' ')
+        # 0ix: 1 … n+1; 0pv[i] = i-1; 0nx[i] = i+1 (no arithmetic in the loop).
+        set -l 0ix (string match -ran -- . "#$0sig" | string split -f1 ' ')
+        set -l 0pv 0 $0ix
+        set -l 0nx $0ix[2..-1]
+        set -l 0run 1
         set -l 0cmd
-        for 0i in (__dotenv_seq (count $0N))
-            if test -n "$0E[$0i]"
-                __dotenv_fail $0f (__dotenv_line $0i) (__dotenv_syntax $0E[$0i])
+        for 0k in $0ix[1..(count $0cs)]
+            set -l 0s $0cs[$0k]
+            set -l 0e $0ce[$0k]
+            if test $0run -lt $0s
+                set -l 0p $0pv[$0s]
+                set -a 0cn $0N[$0run..$0p]
+                set -a 0cv $0V[$0run..$0p]
+            end
+            set 0cmd $0ix[$0s..$0e]
+            if not __dotenv_command
+                __dotenv_fail $0f (__dotenv_line $0s) $0err
                 return 1
             end
-            if test -n "$0S[$0i]"; and set -q 0cmd[1]
-                if not __dotenv_command
-                    __dotenv_fail $0f (__dotenv_line $0cmd[1]) $0err
-                    return 1
-                end
-                set 0cmd
-            end
-            set -a 0cmd $0i
+            set 0run $0nx[$0e]
         end
-        if set -q 0cmd[1]; and not __dotenv_command
-            __dotenv_fail $0f (__dotenv_line $0cmd[1]) $0err
-            return 1
+        if test $0run -le $0n
+            set -a 0cn $0N[$0run..$0n]
+            set -a 0cv $0V[$0run..$0n]
         end
     end
 
@@ -298,6 +319,17 @@ function __dotenv_keeps -a 0nm 0val
     return 1
 end
 
+# 1 … $argv[1] from the current file's index list (see the caller), falling
+# back to generating them.
+function __dotenv_ix -S -a 0c
+    test $0c -gt 0; or return 0
+    if set -q 0ix[$0c]
+        printf '%s\n' $0ix[1..$0c]
+    else
+        __dotenv_seq $0c
+    end
+end
+
 # 1 … $argv[1], one per line, without running the external `seq`.
 function __dotenv_seq -a 0n
     test $0n -gt 0; and string split -f1 ' ' -- (string match -ran . -- (string repeat -n $0n x))
@@ -306,14 +338,16 @@ end
 # Run the simple command formed by the items in $0cmd. Words are expanded and
 # assigned in the order of POSIX 2.9.1; results are appended to $0cn/$0cv.
 function __dotenv_command -S
-    # Common case: one assignment whose value needs no expansion.
-    if not set -q 0cmd[2]
-        set -l 0j $0cmd[1]
-        if test -z "$0R[$0j]$0W[$0j]"
-            set -a 0cn $0N[$0j]
-            set -a 0cv $0V[$0j]
-            return 0
+    # Common case: a command that is one assignment (export prefix or not).
+    if not set -q 0cmd[2]; and test -n "$0N[$0cmd[1]]"
+        if test -n "$0R[$0cmd[1]]"
+            __dotenv_word $0R[$0cmd[1]] a; or return 1
+            set -a 0cv $0res
+        else
+            set -a 0cv $0V[$0cmd[1]]
         end
+        set -a 0cn $0N[$0cmd[1]]
+        return 0
     end
 
     # Classify the words: A assignment, E `export`, D `--`, B bare name,
@@ -381,7 +415,7 @@ function __dotenv_command -S
     set -l 0ops
     set -l 0exp 0
     set -l 0dd 0
-    for 0k in (__dotenv_seq (count $0wk))
+    for 0k in (__dotenv_ix (count $0wk))
         if test $0exp = 0
             switch $0wk[$0k]
                 case A
@@ -461,6 +495,27 @@ end
 #        d  contents of "…"
 #        D  word of ${x-word} etc. inside "…" (2.2.3)
 function __dotenv_word -S -a 0raw 0mode
+    # Usual case first: literal text, "…" and $NAME / ${NAME}, with no
+    # backslash, single quote, backquote, unquoted ~ or other use of $. Quote
+    # characters then only delimit literal text.
+    if test $0mode != D
+        and string match -rq -- '\A(?:[^\x5c\x27"$`~]++|"(?:[^\x5c"$`]++|\$(?:\{[A-Za-z_][A-Za-z0-9_]*+\}|[A-Za-z_][A-Za-z0-9_]*+))*+"|\$(?:\{[A-Za-z_][A-Za-z0-9_]*+\}|[A-Za-z_][A-Za-z0-9_]*+))*+\z' $0raw
+        set -l T
+        # Quote characters are the only text no alternative matches: dropped.
+        string match -raq -- '(?<T>[^"$]++|\$\{[A-Za-z_][A-Za-z0-9_]*+\}|\$[A-Za-z_][A-Za-z0-9_]*+)' $0raw
+        set -l 0out
+        for 0t in $T
+            switch $0t
+                case '$*'
+                    __dotenv_lookup (string trim -c '${}' -- $0t); or return 1
+                    set -a 0out $0res
+                case '*'
+                    set -a 0out $0t
+            end
+        end
+        set 0res (printf %s $0out | string collect -N -a)
+        return 0
+    end
     set -l K
     set -l V
     set -l Z
@@ -484,7 +539,7 @@ function __dotenv_word -S -a 0raw 0mode
     set -l 0tp 0 # 1: inside a tilde prefix
     set -l 0login ''
     set -l 0colon 0 # previous piece was an unquoted colon
-    for 0p in (__dotenv_seq (count $K))
+    for 0p in (__dotenv_ix (count $K))
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
         if test $0tp = 1
@@ -685,10 +740,8 @@ end
 function __dotenv_lookup -S -a 0nm
     set 0lset 1
     # The most recent assignment made by the files so far.
-    set -l 0j (contains -i -- $0nm $0cn[-1..1])
-    if set -q 0j[1]
-        set -l 0rv $0cv[-1..1]
-        set 0res $0rv[$0j]
+    if set -l 0j -(contains -i -- $0nm $0cn[-1..1])
+        set 0res $0cv[$0j]
         return 0
     end
     switch $0nm
@@ -700,8 +753,7 @@ function __dotenv_lookup -S -a 0nm
             set 0err "\$$0nm is set by the shell itself, not taken from the environment; it is not supported"
             return 1
     end
-    set 0j (contains -i -- $0nm $0en)
-    if set -q 0j[1]
+    if set -l 0j (contains -i -- $0nm $0en)
         set 0res $0ev[$0j]
         return 0
     end
@@ -790,7 +842,7 @@ function __dotenv_pattern -S -a 0raw 0star
     set -l 0tp 0 # 1: inside a leading tilde prefix
     set -l 0login ''
     set -l 0colon 0
-    for 0p in (__dotenv_seq (count $K))
+    for 0p in (__dotenv_ix (count $K))
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
         if test $0tp = 1
@@ -888,7 +940,7 @@ function __dotenv_glob -S -a 0t 0star
     set -l V
     string match -raq -- '\G(?|(?<K>)(?<V>[^*?[]++)|(?<K>[*?])(?<V>)|(?<K>\[)(?<V>!?+\]?+(?:\[:[a-z]++:\]|[^\]\[])*+)\]|(?<K>\[)(?<V>))' $0t
     set -l 0out
-    for 0p in (__dotenv_seq (count $K))
+    for 0p in (__dotenv_ix (count $K))
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
         if test -z "$0k"
@@ -936,7 +988,7 @@ function __dotenv_bracket -S -a 0in
     set -l B
     string match -raq -- '\G(?|(?<T>\[:)(?<A>'$0cls')(?<B>):\]|(?=[^\[](?<T>-)[^\[\]])(?<A>[^\[])-(?<B>[^\[\]])|(?<T>)(?<A>[^\[])(?<B>))' $0in
     set -l 0out
-    for 0p in (__dotenv_seq (count $T))
+    for 0p in (__dotenv_ix (count $T))
         switch "$T[$0p]"
             case '[:'
                 set 0pclass 1
@@ -1007,7 +1059,7 @@ function __dotenv_dsq -S -a 0raw
     end
     set -l 0fmt
     set -l 0arg # literal runs, printed through %s so that nothing in them is interpreted
-    for 0p in (__dotenv_seq (count $K))
+    for 0p in (__dotenv_ix (count $K))
         set -l 0v $V[$0p]
         switch $K[$0p]
             case ''
