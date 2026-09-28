@@ -668,7 +668,12 @@ function __dotenv_command -S
             # `export NAME` exports the variable's current value, if it has
             # one: nothing new unless the shell set it itself (e.g. IFS).
             __dotenv_lookup $0opn[$0k]; or return 1
-            test $0lset = 1; and __dotenv_set $0opn[$0k] $0res
+            if test $0lset = 1; and not set -q 0v_$0opn[$0k]
+                and begin
+                    test $0opn[$0k] = IFS; or not contains -- $0opn[$0k] $0en
+                end
+                __dotenv_set $0opn[$0k] $0res
+            end
         end
     end
     return 0

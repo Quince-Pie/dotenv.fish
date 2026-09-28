@@ -51,10 +51,10 @@ for the subset of the shell language that `.env` files use:
 Everything outside this subset is an error. So is every construct inside
 it whose result POSIX leaves unspecified, and every construct on which
 conforming shells give different results, because then there is no single
-correct answer. The rules are applied to the whole file, including
-expansions that are never evaluated, and before anything is assigned. A
-POSIX shell may parse all of a sourced file before running it, so refusing
-the whole file conforms too.
+correct answer. Syntax is checked for the whole file, including words that
+are never evaluated. Nothing is assigned before the whole file has been
+processed. A POSIX shell may parse all of a sourced file before running
+it, so refusing the whole file conforms too.
 
 Examples of what is refused, and why:
 
@@ -70,11 +70,12 @@ Examples of what is refused, and why:
 | `A=${B%[a-z]}` in a UTF-8 locale | ranges are unspecified outside the POSIX locale |
 | `A=~nosuchuser/x` | tilde expansion of an unknown login is unspecified |
 | `LINENO=5`, `RANDOM=1`, `A=$SHLVL`, `A=$UID` | shells maintain these names themselves, differently |
-| `A=$HOSTNAME` when HOSTNAME is not exported | bash sets it on its own, the other shells do not |
+| `A=$HOSTNAME` when HOSTNAME is not exported | bash and busybox set it themselves, the other shells do not |
 | `A=${PRESET-$RANDOM}` | busybox exports RANDOM once it merely reads this |
-| `A=${X-\}}` inside `"…${Y-"…\}…"}"` | `\}` there is an escape in dash, busybox and ksh93 only |
-| `HOME=/h/` followed by `A=~/x` | `//x` in some shells, `/x` in others |
-| `A=1\r` on a line of its own (CRLF file) | a command named CR; the message says to convert the file |
+| `A=${UNSET-"a\}b"}` | `\}` in `"…"` inside `${…}` is an escape in dash, busybox and ksh93 only |
+| `A=x\:~/y` | zsh expands a tilde after an escaped colon, the others do not |
+| `A=~/x` with `HOME=/h/` in the environment | `//x` in some shells, `/x` in others |
+| a blank line in a file with CRLF line endings | a command named CR (the message says to convert the file; otherwise values keep a trailing CR, as in a shell) |
 
 Messages look like `dotenv: app.env:12: $SHLVL is set or maintained by the
 shell itself, …`. Text quoted from the file is shown with control
@@ -106,12 +107,12 @@ message.
   `read`) and `fish_*` settings such as `fish_trace` or
   `fish_function_path`.
 * `IFS` is not read from the environment (POSIX shells reset it), so `$IFS`
-  in a file is always `<space><tab><newline>`. A bare `export IFS` exports
-  that value, as the shells do.
+  in a file is `<space><tab><newline>` unless the file assigns it. A bare
+  `export IFS` exports that value, as the shells do.
 * An exported global `argv` cannot be read from a function, so a file that
   refers to `argv` while one exists is refused.
-* `dotenv` does not depend on the session's `IFS`, `fish_read_limit`
-  aside: input above that limit is an error, not a truncation.
+* `dotenv` works whatever the session's `IFS` is. Input larger than
+  `$fish_read_limit` is an error, not a truncation.
 
 ## Character semantics
 
@@ -162,7 +163,7 @@ deviate. See the list below; each deviation has a case of its own.
 
 Evidence for the final version:
 
-* `tests/cases`: 235 hand-written cases, all `ok`, `ok-err`, `ok-rej` or
+* `tests/cases`: 240 hand-written cases, all `ok`, `ok-err`, `ok-rej` or
   `ok-unsup` (`tests/mkcases.py`, then `tests/difftest.py tests/cases`).
 * `tests/fuzz.py`: a grammar-based generator. It mixes valid constructs
   with near misses, and inserts line continuations and stray characters at
@@ -289,6 +290,7 @@ symlinks in `bin/` (for example from nixpkgs). Then:
 cd tests && ../bin/python3 mkcases.py && ../bin/python3 difftest.py cases
 ../bin/python3 fuzz.py 2000 1 8        # N SEED WORKERS
 ../bin/python3 specials.py 8
-fish --no-config unit.fish
-cd ../bench && ./run.sh 9              # all loaders, all workloads
+# (unit.fish sets and erases a universal variable: use a scratch config dir)
+env XDG_CONFIG_HOME=$(mktemp -d) XDG_DATA_HOME=$(mktemp -d) fish --no-config unit.fish
+cd ../bench && ../bin/python3 gen.py && taskset -c 6 ./run.sh 9   # all loaders, all workloads
 ```

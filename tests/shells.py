@@ -4,7 +4,9 @@ with `set -a` and report which environment variables changed.
 
 Usage (CLI):  shells.py FILE [FILE...]      prints per-shell diffs + consensus
 As a module:  run_all(path, extra_env) -> {shell: result}
-A result is ("ok", {name: bytes_value}) or ("err", stderr_text).
+A result is ("ok", {name: bytes_value}, final_env) or ("err", stderr_text):
+the variables that changed (relative to sourcing an empty file) and the
+whole final environment, both without the noise variables.
 """
 import os, shutil, subprocess, sys, tempfile, threading
 
@@ -98,13 +100,13 @@ def run_one(shell, path, extra=None, timeout=10, setup=""):
     gone = [k for k in before if k not in after and k not in noise]
     for k in gone:
         diff[k] = None
-    return ("ok", diff)
+    return ("ok", diff, {k: v for k, v in after.items() if k not in noise})
 
 def run_all(path, extra=None, shells=None, setup=""):
     return {s: run_one(s, path, extra, setup=setup) for s in (shells or SHELLS)}
 
 def fmt(res):
-    kind, d = res
+    kind, d = res[0], res[1]
     if kind == "err":
         return "ERROR: " + d.splitlines()[-1][:120] if d else "ERROR"
     return " ".join(f"{k}={v!r}" for k, v in sorted(d.items())) or "(no change)"

@@ -56,7 +56,7 @@ def run_fish(path, extra=None, setup="", timeout=20):
     for k in before:
         if k not in after and k not in noise:
             diff[k] = None
-    return ("ok", diff)
+    return ("ok", diff, {k: v for k, v in after.items() if k not in noise})
 
 def directives(path):
     d = {"expect": None, "nonconforming": set(), "env": {}, "setup": ""}
@@ -83,7 +83,19 @@ def verdict(path):
     sh_all = shells.run_all(path, dv["env"], setup=dv["setup"])
     sh = {s: r for s, r in sh_all.items() if s not in dv["nonconforming"] and s not in ADVISORY}
     fi = run_fish(path, dv["env"], dv["setup"])
-    results = {json.dumps(r[1] if r[0] == "ok" else "ERR", sort_keys=True, default=lambda b: b.decode("latin1")) for r in sh.values()}
+    # Compare final values of every variable that dotenv or a voting shell
+    # changed: fish and the shells start from slightly different
+    # environments (e.g. fish resets an inherited IFS to its own default),
+    # so the same final value may be a change for one and not the other.
+    keys = set()
+    for r in list(sh.values()) + [fi]:
+        if r[0] == "ok":
+            keys |= set(r[1])
+    def view(r):
+        if r[0] != "ok":
+            return "ERR"
+        return json.dumps({k: r[2].get(k) for k in sorted(keys)}, default=lambda b: b.decode("latin1"))
+    results = {view(r) for r in sh.values()}
     agree = len(results) == 1
     all_err = all(r[0] == "err" for r in sh.values())
     ref = next(iter(sh.values()))
@@ -96,7 +108,7 @@ def verdict(path):
     elif fi[0] == "err":
         v = "REJECT"
     else:
-        v = "ok" if fi[1] == ref[1] else "MISMATCH"
+        v = "ok" if view(fi) == view(ref) else "MISMATCH"
     return v, sh_all, fi, agree
 
 def show(v):
