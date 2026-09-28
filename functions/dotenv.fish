@@ -699,7 +699,8 @@ end
 #        D  word of ${x-word} etc. inside "…" (2.2.3)
 function __dotenv_word -S -a 0raw 0mode
     # Usual case first: literal text, "…", $NAME, ${NAME} and ${NAME op word}
-    # (op one of - + = ? with or without a colon) with a literal word; no
+    # (op one of - + = ? with or without a colon, or % %% # ## with a
+    # pattern of literal text and * only) with a literal word; no
     # backslash, single quote, backquote, ~ or other use of $; at most 16
     # pieces. Quote characters then only delimit literal text, so the regex
     # skips them (inside ${…} within "…" a quote is unspecified: not here).
@@ -718,7 +719,7 @@ function __dotenv_word -S -a 0raw 0mode
         return 0
     end
     if test $0mode != D; or not string match -q -- '*"*' $0raw
-        string match -raq -- '(?|(?<T>[^"$\x5c\x27`~]++)(?<R>)(?<O>)(?<W>)|(?<T>)\$\{(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?:(?<O>:?[-=?+])(?<W>[^}"$\x5c\x27`~]*+))?+\}|(?<T>)\$(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?<O>)(?<W>))|(?<X>[\x5c\x27`~$])' $0raw
+        string match -raq -- '(?|(?<T>[^"$\x5c\x27`~]++)(?<R>)(?<O>)(?<W>)|(?<T>)\$\{(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?:(?<O>:?[-=?+])(?<W>[^}"$\x5c\x27`~]*+))?+\}|(?<T>)\$\{(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?<O>%%?+|\#\#?+)(?<W>[^}"$\x5c\x27`~?\[()|]*+)\}|(?<T>)\$(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?<O>)(?<W>))|(?<X>[\x5c\x27`~$])' $0raw
         if not string length -q -- $X ''; and not set -q T[17]
             set -l 0acc ''
             for 0p in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
@@ -781,12 +782,38 @@ function __dotenv_word -S -a 0raw 0mode
                             end
                             return 1
                         end
+                    case % %% '#' '##'
+                        # (only literal text and *: no character semantics)
+                        set -l 0flags $0pwild $0pclass
+                        set 0pwild 0
+                        set 0pclass 0
+                        set -l 0pstar '.*'
+                        test "$O[$0p]" = '#'; and set 0pstar '.*?'
+                        __dotenv_strip "$O[$0p]" $0val "$(string escape --style=regex -- $W[$0p] | string replace -a '\*' $0pstar)"
+                        or return 1
+                        set 0pwild $0flags[1]
+                        set 0pclass $0flags[2]
+                        set 0val $0res
                 end
                 set 0acc "$0acc$0val"
             end
             set 0res $0acc
             return 0
         end
+    end
+    # A word that is one "…" with backslash escapes but no expansion, or such
+    # contents of "…": decode \$ \` \" \\ and line continuations in one
+    # replacement (read -d with the file's delimiter keeps trailing newlines).
+    set -l 0dq
+    if test $0mode = a
+        string match -rq -- '\A"(?<X>(?:[^"\x5c$`]++|\x5c[\s\S])*+)"\z' $0raw; and set 0dq $X
+    else if test $0mode = d; and not string match -rq -- '[$`]' $0raw
+        set 0dq $0raw
+    end
+    if set -q 0dq[1]
+        set -l 0junk
+        string replace -ra -- '\x5c(?:\n|([$`"\x5c]))' '${1:+$1:}' "$0dq$0dl" | read -z -d $0dl 0res 0junk
+        return 0
     end
     set -l K
     set -l V
@@ -1336,6 +1363,11 @@ end
 
 # Unquoted pattern text into a PCRE fragment. $argv[2]: regex for `*`.
 function __dotenv_glob -S -a 0t 0star
+    # mksh and ksh93 take ( | ) as parts of extended patterns, POSIX does not.
+    if string match -rq -- '[()|]' $0t
+        set 0err "unquoted '(', '|' or ')' in a pattern is an extended pattern in mksh and ksh; quote it"
+        return 1
+    end
     # K: '' literal text, * or ?, [ with V the bracket contents, or a lone [.
     set -l K
     set -l V

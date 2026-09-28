@@ -83,7 +83,9 @@ def param(rnd, depth, in_dq=False):
                         "'pre'", "*/", "~", "\\*", "x" + word(rnd, depth),
                         # nested expansions: a default word keeps its quoting, a value is a pattern
                         "${NOPE-\\*}", "${NOPE-'*'}", "${NOPE-\"*\"}", "${G}", "$G", "\"$G\"", "*${PRESET:+\\?}",
-                        "${G%\\*}", "?${NOPE%x}", "${NOPE-*}", "${NOPE:-$G}", "${NOPE-\"$G\"}"])
+                        "${G%\\*}", "?${NOPE%x}", "${NOPE-*}", "${NOPE:-$G}", "${NOPE-\"$G\"}",
+                        # extended-pattern characters (mksh, ksh)
+                        "*(x)", "@(a|b)", "|*", "a(b", "\"(\"*", ".*", "*.*"])
     else:
         w = dq(rnd, depth) if in_dq and r() < 0.6 else word(rnd, depth)
     return "${" + name + op + w + "}"

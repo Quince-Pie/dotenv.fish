@@ -167,9 +167,9 @@ Evidence for the final version:
   `ok-unsup` (`tests/mkcases.py`, then `tests/difftest.py tests/cases`).
 * `tests/fuzz.py`: a grammar-based generator. It mixes valid constructs
   with near misses, and inserts line continuations and stray characters at
-  random. The last four campaigns (21,000 files) found 0 MISMATCH and 0
-  ACCEPT on the committed versions; the five ACCEPTs of the one before led
-  to fixes. Campaign logs are kept in `.work/fuzz*.log`.
+  random. Every campaign ran against the version committed at the time.
+  Every finding was fixed (or, for a shell's deviation, annotated), and the
+  next campaign ran on the fixed version (see FUZZ_TABLE below).
 * `tests/specials.py`: 210 variable names that some shell sets or treats
   specially (from each shell's startup variables and manuals). Each is
   assigned (3 values), referred to while unset and while inherited
@@ -178,6 +178,8 @@ Evidence for the final version:
 * `tests/unit.fish`: 54 checks of what the oracle cannot see: scope,
   atomicity, messages and line numbers, options, standard input, `--print`
   round trips, fish-specific refusals, independence from `IFS`.
+
+FUZZ_TABLE
 
 Deviations of the reference shells that the tests account for:
 
