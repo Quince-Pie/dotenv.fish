@@ -650,13 +650,22 @@ function __dotenv_word -S -a 0raw 0mode
     set -l V
     set -l Z
     if not string match -q -- '*${*' $0raw
-        # Without ${…} nothing nests, so the shared sub-patterns are not needed.
+        # Without ${…} nothing nests: the same piece grammar without the
+        # shared sub-patterns, which are costly to compile.
         if test $0mode = d -o $0mode = D
             string match -raq -- '\G(?|(?<K>)(?<V>[^\x5c"$`]++)|(?<K>\x5c)(?<V>[\s\S])|(?<K>\$)(?<V>[A-Za-z_][A-Za-z0-9_]*+|(?=[\x20\t\n\x27]|\z)))|(?<Z>[\s\S])' $0raw 2>/dev/null
-        else if string match -q -- '*~*' $0raw
-            string match -raq -- $0pu $0raw 2>/dev/null
         else
-            string match -raq -- $0pn $0raw 2>/dev/null
+            set -l 0lit '[^\x5c\x27"$`]++'
+            string match -q -- '*~*' $0raw; and set 0lit '[^\x5c\x27"$`~:/]++)|(?<K>[~:/])(?<V>'
+            string match -raq -- '(?x)\G(?|(?<K>)(?<V>'$0lit')
+                |(?<K>\x5c)(?<V>[\s\S])
+                |(?<K>\x27)(?<V>[^\x27]*+)\x27
+                |(?<K>\$\x27)(?<V>(?:[^\x27\x5c]++|\x5c["\x27\x5cabefnrtv]|\x5cc(?:\x5c\x5c|[A-Za-z\[\]^_?])
+                    |\x5cx(?!0{1,2}+(?![0-9A-Fa-f]))[0-9A-Fa-f]{1,2}+(?![0-9A-Fa-f])
+                    |\x5c(?!0{1,3}+(?![0-7]))(?:[0-3][0-7]{0,2}+|[4-7][0-7]?+(?![0-7])))*+)\x27
+                |(?<K>")(?<V>(?:[^"\x5c$`]++|\x5c[\s\S]|\$(?:[A-Za-z_][A-Za-z0-9_]*+|(?=[\x20\t\n\x27])))*+)"
+                |(?<K>\$)(?<V>[A-Za-z_][A-Za-z0-9_]*+|(?=[\x20\t\n]|\z)))
+                |(?<Z>[\s\S])' $0raw 2>/dev/null
         end
     else if test $0mode = d -o $0mode = D
         string match -raq -- $0pd $0raw 2>/dev/null
