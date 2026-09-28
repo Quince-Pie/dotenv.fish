@@ -20,7 +20,7 @@ NAMES = ["A", "B", "C", "D1", "_u", "X_PATH", "PRESET", "EMPTY", "HOME", "UNSET_
 # values of G that are special in patterns
 GLOBVALS = ["'ab*'", "'*x*'", "'a?c'", "'[ab]'", "'a\\b'", "'\u00e9*'", "'x*y'", "'*'"]
 REFS = NAMES + ["NOPE", "PWD", "IFS", "TERM", "HOSTNAME", "SHLVL", "RANDOM", "USER", "OPTIND"]
-PLAIN = list("abcXYZ019_-+.,@%^=#!{}/:~*?[]") + ["é", "日", "\r"]
+PLAIN = list("abcXYZ019_-+.,@%^=#!{}/:~*?[]") + ["é", "日", "\r", "<(", ">(", ")"]
 SQ_CHARS = list("ab \t\"$`\\#;&|<>(){}*?~:/=\n") + ["é"]
 DQ_PIECES = ["a", "b", " ", "\t", "'", "#", ";", "&", "|", "<", ">", "(", ")", "~", ":", "/", "*", "\n",
              "\\$", "\\`", "\\\"", "\\\\", "\\n", "\\t", "\\\n", "\\a", "\\}", "é", "$ ", "$'"]
