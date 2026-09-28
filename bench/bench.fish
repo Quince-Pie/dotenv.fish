@@ -1,4 +1,4 @@
-# usage: fish --no-config bench.fish [REPS]
+# usage: fish --no-config bench.fish REPS DASH BASH WORKLOAD [LOADER...]
 # Per-call wall time of each loader on each workload, measured inside one warm
 # fish process: REPS batches of B calls, B chosen so a batch takes ~60 ms.
 source (status dirname)/loaders.fish
@@ -7,9 +7,10 @@ set -g BL_BASH $argv[3]
 set -l reps $argv[1]
 set -l dir (status dirname)/work
 set -l idx (string split ' ' (string repeat -n 2000 'x ')) # iteration lists, no fork
-printf '%-14s %-10s %9s %9s %9s %6s\n' workload loader 'median' 'min' 'max' B
-for f in small medium large refs heavy realistic
-    for L in bl_dotenv bl_dash bl_bash bl_naive
+set -l loaders $argv[5..-1]
+set -q loaders[1]; or set loaders bl_dotenv bl_dash bl_bash bl_naive
+for f in $argv[4]
+    for L in $loaders
         # warm-up and batch size
         set -l t0 (date +%s%N)
         for i in $idx[1..5]

@@ -11,8 +11,8 @@
 # Local variables start with a digit. fish allows that and POSIX names do
 # not, so no name that a .env file refers to can collide with one of ours.
 # Variables created by `string match` capture groups live in short blocks.
-# Values are joined with `printf %s … | string collect -N -a`, the only way
-# to build a string in fish that neither splits on nor trims newlines.
+# Lists are joined with `printf %s … | read -z`, which neither splits on nor
+# trims newlines (command substitutions do, and also cost ~10 µs each).
 
 function dotenv --description 'Load POSIX .env files into the environment (as `set -a; . FILE` would)'
     set -l 0print 0
@@ -97,6 +97,15 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         |(?<K>\$\{)(?<V>(?8))\}
         |(?<K>\$)(?<V>(?3)|(?=[\x20\t\n]|\z)))
         |(?<Z>[\s\S])'
+    # The same without splitting at ~ : / (words without a tilde).
+    set -l 0pn $0def'\G(?|(?<K>)(?<V>[^\x5c\x27"$`]++)
+        |(?<K>\x5c)(?<V>[\s\S])
+        |(?<K>\x27)(?<V>[^\x27]*+)\x27
+        |(?<K>\$\x27)(?<V>(?13))\x27
+        |(?<K>")(?<V>(?12))"
+        |(?<K>\$\{)(?<V>(?8))\}
+        |(?<K>\$)(?<V>(?3)|(?=[\x20\t\n]|\z)))
+        |(?<Z>[\s\S])'
     set -l 0pd $0def'\G(?|(?<K>)(?<V>[^\x5c"$`]++)
         |(?<K>\x5c)(?<V>[\s\S])
         |(?<K>\$\{)(?<V>(?9))\}
@@ -114,6 +123,11 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     set -l 0utf8 # 1/0 once known: is the environment's LC_CTYPE UTF-8?
     set -l 0pwild # set by __dotenv_pattern: ? or […] used
     set -l 0pclass # set by __dotenv_pattern: [:class:] used
+    # Values assigned so far are also kept in variables 0v_NAME, and the
+    # environment snapshot in 0e_NAME: O(1) lookups (digit-led, so they
+    # cannot collide with POSIX names). Helpers loop over short literal index
+    # lists, since a command substitution costs ~10 µs in fish.
+    set -l 0dl # delimiter absent from the input, for multi-variable `read`
 
     for 0f in $0files
         set -l 0text
@@ -184,6 +198,7 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             else
                 set -a 0cn $n
                 set -a 0cv $v
+                set -f 0lazy 1 # 0v_ variables not yet made for these
             end
         end
         if test $0simple = 2
@@ -211,6 +226,9 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             else if set -q -x $0nm
                 set -a 0en $0nm
                 set -a 0ev "$$0nm"
+                # (lookups inline 0e_ reads; these names must reach __dotenv_lookup)
+                contains -- $0nm IFS LINENO OPTIND PPID PS1 PS2 PS4
+                or set -f 0e_$0nm "$$0nm"
             else
                 set -a 0eu $0nm
             end
@@ -235,6 +253,18 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         set -l 0ix (string match -ran -- . "#$0sig" | string split -f1 ' ')
         set -l 0pv 0 $0ix
         set -l 0nx $0ix[2..-1]
+        # Delimiter for multi-variable `read`: not in this file's text, hence
+        # in no literal value of it.
+        set 0dl \x1e\x1f\x1e
+        while string match -q -- "*$0dl*" $0text
+            set 0dl $0dl\x1f
+        end
+        if set -q 0lazy[1]
+            for 0i in (__dotenv_seq (count $0cn))
+                set -f 0v_$0cn[$0i] $0cv[$0i]
+            end
+            set -e 0lazy
+        end
         set -l 0run 1
         set -l 0cmd
         for 0k in $0ix[1..(count $0cs)]
@@ -242,19 +272,30 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             set -l 0e $0ce[$0k]
             if test $0run -lt $0s
                 set -l 0p $0pv[$0s]
-                set -a 0cn $0N[$0run..$0p]
-                set -a 0cv $0V[$0run..$0p]
+                __dotenv_run $0run $0p
             end
-            set 0cmd $0ix[$0s..$0e]
-            if not __dotenv_command
-                __dotenv_fail $0f (__dotenv_line $0s) $0err
-                return 1
+            if test $0s = $0e; and test -n "$0N[$0s]"
+                # A command that is a single assignment.
+                if not __dotenv_word $0R[$0s] a
+                    __dotenv_fail $0f (__dotenv_line $0s) $0err
+                    return 1
+                end
+                set -a 0cn $0N[$0s]
+                set -a 0cv $0res
+                set -f 0v_$0N[$0s] $0res
+            else
+                set 0cmd $0ix[$0s..$0e]
+                if not __dotenv_command
+                    __dotenv_fail $0f (__dotenv_line $0s) $0err
+                    return 1
+                end
             end
             set 0run $0nx[$0e]
         end
         if test $0run -le $0n
             set -a 0cn $0N[$0run..$0n]
             set -a 0cv $0V[$0run..$0n]
+            set -f 0lazy 1
         end
     end
 
@@ -319,15 +360,25 @@ function __dotenv_keeps -a 0nm 0val
     return 1
 end
 
-# 1 … $argv[1] from the current file's index list (see the caller), falling
-# back to generating them.
-function __dotenv_ix -S -a 0c
-    test $0c -gt 0; or return 0
-    if set -q 0ix[$0c]
-        printf '%s\n' $0ix[1..$0c]
-    else
-        __dotenv_seq $0c
+# Append the literal assignments of items $argv[1]…$argv[2] and record them
+# in 0v_ variables with a single `read`.
+function __dotenv_run -S -a 0a 0b
+    set -a 0cn $0N[$0a..$0b]
+    set -a 0cv $0V[$0a..$0b]
+    if test $0a = $0b
+        set -f 0v_$0N[$0a] $0V[$0a]
+        return 0
     end
+    printf "%s$0dl" $0V[$0a..$0b] | read -z -f -d $0dl 0v_$0N[$0a..$0b] 0v_
+    set -e 0v_
+    return 0
+end
+
+# Record an assignment made while running a command.
+function __dotenv_set -S -a 0nm 0val
+    set -a 0cn $0nm
+    set -a 0cv $0val
+    set -f 0v_$0nm $0val
 end
 
 # 1 … $argv[1], one per line, without running the external `seq`.
@@ -342,11 +393,10 @@ function __dotenv_command -S
     if not set -q 0cmd[2]; and test -n "$0N[$0cmd[1]]"
         if test -n "$0R[$0cmd[1]]"
             __dotenv_word $0R[$0cmd[1]] a; or return 1
-            set -a 0cv $0res
+            __dotenv_set $0N[$0cmd[1]] $0res
         else
-            set -a 0cv $0V[$0cmd[1]]
+            __dotenv_set $0N[$0cmd[1]] $0V[$0cmd[1]]
         end
-        set -a 0cn $0N[$0cmd[1]]
         return 0
     end
 
@@ -415,7 +465,10 @@ function __dotenv_command -S
     set -l 0ops
     set -l 0exp 0
     set -l 0dd 0
-    for 0k in (__dotenv_ix (count $0wk))
+    set -l 0q 1 2 3 4 5 6 7 8
+    set -q 0wk[9]; and set 0q (__dotenv_seq (count $0wk))
+    for 0k in $0q
+        set -q 0wk[$0k]; or break
         if test $0exp = 0
             switch $0wk[$0k]
                 case A
@@ -448,8 +501,7 @@ function __dotenv_command -S
     if test $0exp = 0
         for 0k in $0pre
             __dotenv_value $0k; or return 1
-            set -a 0cn $0wn[$0k]
-            set -a 0cv $0res
+            __dotenv_set $0wn[$0k] $0res
         end
         return 0
     end
@@ -470,11 +522,11 @@ function __dotenv_command -S
     end
     for 0k in $0pre
         __dotenv_value $0k; or return 1
-        set -a 0cn $0wn[$0k]
-        set -a 0cv $0res
+        __dotenv_set $0wn[$0k] $0res
     end
-    set -a 0cn $0opn
-    set -a 0cv $0opv
+    for 0k in (__dotenv_seq (count $0opn))
+        __dotenv_set $0opn[$0k] $0opv[$0k]
+    end
     return 0
 end
 
@@ -495,36 +547,114 @@ end
 #        d  contents of "…"
 #        D  word of ${x-word} etc. inside "…" (2.2.3)
 function __dotenv_word -S -a 0raw 0mode
-    # Usual case first: literal text, "…" and $NAME / ${NAME}, with no
-    # backslash, single quote, backquote, unquoted ~ or other use of $. Quote
-    # characters then only delimit literal text.
-    if test $0mode != D
-        and string match -rq -- '\A(?:[^\x5c\x27"$`~]++|"(?:[^\x5c"$`]++|\$(?:\{[A-Za-z_][A-Za-z0-9_]*+\}|[A-Za-z_][A-Za-z0-9_]*+))*+"|\$(?:\{[A-Za-z_][A-Za-z0-9_]*+\}|[A-Za-z_][A-Za-z0-9_]*+))*+\z' $0raw
-        set -l T
-        # Quote characters are the only text no alternative matches: dropped.
-        string match -raq -- '(?<T>[^"$]++|\$\{[A-Za-z_][A-Za-z0-9_]*+\}|\$[A-Za-z_][A-Za-z0-9_]*+)' $0raw
-        set -l 0out
-        for 0t in $T
-            switch $0t
-                case '$*'
-                    __dotenv_lookup (string trim -c '${}' -- $0t); or return 1
-                    set -a 0out $0res
-                case '*'
-                    set -a 0out $0t
-            end
-        end
-        set 0res (printf %s $0out | string collect -N -a)
+    # Usual case first: literal text, "…", $NAME, ${NAME} and ${NAME op word}
+    # (op one of - + = ? with or without a colon) with a literal word; no
+    # backslash, single quote, backquote, ~ or other use of $; at most 8
+    # pieces. Quote characters then only delimit literal text, so the regex
+    # skips them (inside ${…} within "…" a quote is unspecified: not here).
+    # T: text; R: a parameter name, with operator O and word W; X: anything
+    # else (use the general code below). Nothing here recurses, so T R O W X
+    # need not be local.
+    # A leading `~` followed by `/` or nothing, and no other `~`: expand it
+    # and handle the rest on its own.
+    if test $0mode = a; and string match -rq -- '\A~(?<X>(?:/[^~]*+)?+)\z' $0raw
+        set -l 0nx ''
+        test -n "$X"; and set 0nx /
+        __dotenv_tilde '' $0nx; or return 1
+        set -l 0home $0res
+        __dotenv_word "$X" a; or return 1
+        set 0res "$0home$0res"
         return 0
+    end
+    if test $0mode != D; or not string match -q -- '*"*' $0raw
+        string match -raq -- '(?|(?<T>[^"$\x5c\x27`~]++)(?<R>)(?<O>)(?<W>)|(?<T>)\$\{(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?:(?<O>:?[-=?+])(?<W>[^}"$\x5c\x27`~]*+))?+\}|(?<T>)\$(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?<O>)(?<W>))|(?<X>[\x5c\x27`~$])' $0raw
+        if not string length -q -- $X ''; and not set -q T[9]
+            set -l 0acc ''
+            for 0p in 1 2 3 4 5 6 7 8
+                set -q T[$0p]; or break
+                if test -z "$R[$0p]"
+                    set 0acc "$0acc$T[$0p]"
+                    continue
+                else if test -z "$O[$0p]"
+                    if set -q 0v_$R[$0p]
+                        set -l 0k 0v_$R[$0p]
+                        set 0acc "$0acc$$0k"
+                        continue
+                    else if set -q 0e_$R[$0p]
+                        set -l 0k 0e_$R[$0p]
+                        set 0acc "$0acc$$0k"
+                        continue
+                    end
+                end
+                set -l 0nm $R[$0p]
+                set -l 0val
+                set -l 0set 1
+                if set -q 0v_$0nm
+                    set -l 0k 0v_$0nm
+                    set 0val "$$0k"
+                else if set -q 0e_$0nm
+                    set -l 0k 0e_$0nm
+                    set 0val "$$0k"
+                else
+                    __dotenv_lookup $0nm; or return 1
+                    set 0val $0res
+                    set 0set $0lset
+                end
+                switch "$O[$0p]"
+                    case ''
+                    case -
+                        test $0set = 0; and set 0val $W[$0p]
+                    case :-
+                        test -z "$0val"; and set 0val $W[$0p]
+                    case +
+                        if test $0set = 1
+                            set 0val $W[$0p]
+                        end
+                    case :+
+                        test -n "$0val"; and set 0val $W[$0p]
+                    case = :=
+                        if test $0set = 0 -o \( "$O[$0p]" = := -a -z "$0val" \)
+                            set 0val $W[$0p]
+                            set -a 0cn $0nm
+                            set -a 0cv $0val
+                            set -f 0v_$0nm $0val
+                        end
+                    case \? :\?
+                        if test $0set = 0 -o \( "$O[$0p]" = :\? -a -z "$0val" \)
+                            if test -n "$W[$0p]"
+                                set 0err "$0nm: $W[$0p]"
+                            else if test $0set = 0
+                                set 0err "$0nm: parameter not set"
+                            else
+                                set 0err "$0nm: parameter null or not set"
+                            end
+                            return 1
+                        end
+                end
+                set 0acc "$0acc$0val"
+            end
+            set 0res $0acc
+            return 0
+        end
     end
     set -l K
     set -l V
     set -l Z
-    set -l 0uq 1 # unquoted context
-    if test $0mode = a -o $0mode = u
+    if not string match -q -- '*${*' $0raw
+        # Without ${…} nothing nests, so the shared sub-patterns are not needed.
+        if test $0mode = d -o $0mode = D
+            string match -raq -- '\G(?|(?<K>)(?<V>[^\x5c"$`]++)|(?<K>\x5c)(?<V>[\s\S])|(?<K>\$)(?<V>[A-Za-z_][A-Za-z0-9_]*+|(?=[\x20\t\n\x27]|\z)))|(?<Z>[\s\S])' $0raw 2>/dev/null
+        else if string match -q -- '*~*' $0raw
+            string match -raq -- $0pu $0raw 2>/dev/null
+        else
+            string match -raq -- $0pn $0raw 2>/dev/null
+        end
+    else if test $0mode = d -o $0mode = D
+        string match -raq -- $0pd $0raw 2>/dev/null
+    else if string match -q -- '*~*' $0raw
         string match -raq -- $0pu $0raw 2>/dev/null
     else
-        set 0uq 0
-        string match -raq -- $0pd $0raw 2>/dev/null
+        string match -raq -- $0pn $0raw 2>/dev/null
     end
     if test $status -gt 1
         set 0err "word too large or deeply nested"
@@ -534,12 +664,95 @@ function __dotenv_word -S -a 0raw 0mode
         set 0err (__dotenv_badchar (printf %s $Z))
         return 1
     end
-    set -l 0out
-    set -l 0tl 1 # 1: the next piece may start a tilde prefix
-    set -l 0tp 0 # 1: inside a tilde prefix
+    # Tilde prefixes become pieces of kind T whose text is the pathname.
+    if contains -- '~' $K
+        __dotenv_tildes $0mode; or return 1
+    end
+    set -l 0acc ''
+    set -l 0q 1 2 3 4 5 6 7 8
+    set -q K[9]; and set 0q (__dotenv_seq (count $K))
+    for 0p in $0q
+        set -q K[$0p]; or break
+        switch $K[$0p]
+            case '' T
+                set 0acc "$0acc$V[$0p]"
+            case : /
+                set 0acc "$0acc$K[$0p]"
+            case '~'
+                set 0acc "$0acc~"
+            case \\
+                if test $0mode = a -o $0mode = u
+                    test "$V[$0p]" = \n; or set 0acc "$0acc$V[$0p]"
+                else
+                    switch $V[$0p]
+                        case \n
+                        case \$ \` \" \\
+                            set 0acc "$0acc$V[$0p]"
+                        case '}'
+                            if test $0mode = D
+                                set 0acc "$0acc}"
+                            else
+                                set 0acc "$0acc\\}"
+                            end
+                        case '*'
+                            set 0acc "$0acc\\$V[$0p]"
+                    end
+                end
+            case \'
+                set 0acc "$0acc$V[$0p]"
+            case \$\'
+                __dotenv_dsq $V[$0p]; or return 1
+                set 0acc "$0acc$0res"
+            case \"
+                __dotenv_word $V[$0p] d; or return 1
+                set 0acc "$0acc$0res"
+            case \$\{
+                if test $0mode = a -o $0mode = u
+                    __dotenv_param $V[$0p] u; or return 1
+                else
+                    __dotenv_param $V[$0p] q; or return 1
+                end
+                set 0acc "$0acc$0res"
+            case \$
+                if test -z "$V[$0p]"
+                    set 0acc "$0acc\$"
+                else
+                    __dotenv_lookup $V[$0p]; or return 1
+                    set 0acc "$0acc$0res"
+                end
+        end
+    end
+    set 0res $0acc
+    return 0
+end
+
+# $0out joined into $0res.
+function __dotenv_join -S
+    if set -q 0out[2]
+        # (a pipe into read costs less than a command substitution)
+        printf %s $0out | read -z 0res
+        set -q 0res[1]; or set 0res ''
+    else if set -q 0out[1]
+        set 0res $0out
+    else
+        set 0res ''
+    end
+end
+
+# Replace the tilde prefixes among the pieces K/V of the calling
+# __dotenv_word (mode $argv[1]: a or u) by pieces of kind T: at the start of
+# the word and, in assignments, after each unquoted colon (2.6.1).
+function __dotenv_tildes -S -a 0mode
+    set -l 0K
+    set -l 0V
+    set -l 0tl 1 # the next piece may start a tilde prefix
+    set -l 0tp 0 # inside a tilde prefix
     set -l 0login ''
-    set -l 0colon 0 # previous piece was an unquoted colon
-    for 0p in (__dotenv_ix (count $K))
+    set -l 0colon 0 # previous piece was a colon
+    set -l 0q 1 2 3 4 5 6 7 8
+    set -q K[9]; and set 0q (__dotenv_seq (count $K))
+    for 0p in $0q
+        set -q K[$0p]; or break
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
         if test $0tp = 1
@@ -553,7 +766,8 @@ function __dotenv_word -S -a 0raw 0mode
                 return 1
             end
             __dotenv_tilde $0login $0k; or return 1
-            set -a 0out $0res
+            set -a 0K T
+            set -a 0V $0res
             set 0tp 0
         end
         set -l 0wastl $0tl
@@ -561,74 +775,29 @@ function __dotenv_word -S -a 0raw 0mode
         set -l 0wascolon $0colon
         set 0colon 0
         switch $0k
-            case ''
-                set -a 0out $0v
             case '~'
-                if test $0wastl = 1 -a $0uq = 1
+                if test $0wastl = 1
                     set 0tp 1
                     set 0login ''
+                    continue
                 else if test $0wascolon = 1 -a $0mode = u
                     set 0err "'~' after ':' inside \${…} is expanded by some shells and not by others"
                     return 1
-                else
-                    set -a 0out '~'
                 end
             case :
-                set -a 0out :
                 set 0colon 1
                 test $0mode = a; and set 0tl 1
-            case /
-                set -a 0out /
-            case \\
-                if test $0uq = 1
-                    test "$0v" = \n; or set -a 0out $0v
-                else
-                    switch $0v
-                        case \n
-                        case \$ \` \" \\
-                            set -a 0out $0v
-                        case '}'
-                            if test $0mode = D
-                                set -a 0out '}'
-                            else
-                                set -a 0out '\\}'
-                            end
-                        case '*'
-                            set -a 0out \\$0v
-                    end
-                end
-            case \'
-                set -a 0out $0v
-            case \$\'
-                __dotenv_dsq $0v; or return 1
-                set -a 0out $0res
-            case \"
-                __dotenv_word $0v d; or return 1
-                set -a 0out $0res
-            case \$\{
-                if test $0uq = 1
-                    __dotenv_param $0v u; or return 1
-                else
-                    __dotenv_param $0v q; or return 1
-                end
-                set -a 0out $0res
-            case \$
-                if test -z "$0v"
-                    set -a 0out \$
-                else if string match -rq -- '\A[A-Za-z_]' $0v
-                    __dotenv_lookup $0v; or return 1
-                    set -a 0out $0res
-                else
-                    set 0err "special parameter \$$0v is not supported"
-                    return 1
-                end
         end
+        set -a 0K $0k
+        set -a 0V $0v
     end
     if test $0tp = 1
         __dotenv_tilde $0login ''; or return 1
-        set -a 0out $0res
+        set -a 0K T
+        set -a 0V $0res
     end
-    set 0res (printf %s $0out | string collect -N -a)
+    set K $0K
+    set V $0V
     return 0
 end
 
@@ -702,8 +871,7 @@ function __dotenv_param -S -a 0body 0ctx
         case = :=
             if test $0set = 0 -o \( "$Bo" = := -a $0null = 1 \)
                 __dotenv_word "$Bw" $0wm; or return 1
-                set -a 0cn $Bn
-                set -a 0cv $0res
+                __dotenv_set $Bn $0res
             else
                 set 0res $0val
             end
@@ -740,8 +908,9 @@ end
 function __dotenv_lookup -S -a 0nm
     set 0lset 1
     # The most recent assignment made by the files so far.
-    if set -l 0j -(contains -i -- $0nm $0cn[-1..1])
-        set 0res $0cv[$0j]
+    if set -q 0v_$0nm
+        set -l 0k 0v_$0nm
+        set 0res "$$0k"
         return 0
     end
     switch $0nm
@@ -753,8 +922,9 @@ function __dotenv_lookup -S -a 0nm
             set 0err "\$$0nm is set by the shell itself, not taken from the environment; it is not supported"
             return 1
     end
-    if set -l 0j (contains -i -- $0nm $0en)
-        set 0res $0ev[$0j]
+    if set -q 0e_$0nm
+        set -l 0k 0e_$0nm
+        set 0res "$$0k"
         return 0
     end
     set 0lset 0
@@ -842,7 +1012,10 @@ function __dotenv_pattern -S -a 0raw 0star
     set -l 0tp 0 # 1: inside a leading tilde prefix
     set -l 0login ''
     set -l 0colon 0
-    for 0p in (__dotenv_ix (count $K))
+    set -l 0q 1 2 3 4 5 6 7 8
+    set -q K[9]; and set 0q (__dotenv_seq (count $K))
+    for 0p in $0q
+        set -q K[$0p]; or break
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
         if test $0tp = 1
@@ -883,7 +1056,9 @@ function __dotenv_pattern -S -a 0raw 0star
                 continue
         end
         if set -q 0buf[1]
-            __dotenv_glob (printf %s $0buf | string collect -N -a) $0star; or return 1
+            printf %s $0buf | read -z -l 0t
+            set -q 0t[1]; or set 0t ''
+            __dotenv_glob $0t $0star; or return 1
             set -a 0out $0res
             set 0buf
         end
@@ -926,10 +1101,12 @@ function __dotenv_pattern -S -a 0raw 0star
         set -a 0out (string escape --style=regex -- $0res)
     end
     if set -q 0buf[1]
-        __dotenv_glob (printf %s $0buf | string collect -N -a) $0star; or return 1
+        printf %s $0buf | read -z -l 0t
+        set -q 0t[1]; or set 0t ''
+        __dotenv_glob $0t $0star; or return 1
         set -a 0out $0res
     end
-    set 0res (printf %s $0out | string collect -N -a)
+    __dotenv_join
     return 0
 end
 
@@ -940,7 +1117,10 @@ function __dotenv_glob -S -a 0t 0star
     set -l V
     string match -raq -- '\G(?|(?<K>)(?<V>[^*?[]++)|(?<K>[*?])(?<V>)|(?<K>\[)(?<V>!?+\]?+(?:\[:[a-z]++:\]|[^\]\[])*+)\]|(?<K>\[)(?<V>))' $0t
     set -l 0out
-    for 0p in (__dotenv_ix (count $K))
+    set -l 0q 1 2 3 4 5 6 7 8
+    set -q K[9]; and set 0q (__dotenv_seq (count $K))
+    for 0p in $0q
+        set -q K[$0p]; or break
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
         if test -z "$0k"
@@ -958,7 +1138,7 @@ function __dotenv_glob -S -a 0t 0star
             set -a 0out $0res
         end
     end
-    set 0res (printf %s $0out | string collect -N -a)
+    __dotenv_join
     return 0
 end
 
@@ -988,7 +1168,10 @@ function __dotenv_bracket -S -a 0in
     set -l B
     string match -raq -- '\G(?|(?<T>\[:)(?<A>'$0cls')(?<B>):\]|(?=[^\[](?<T>-)[^\[\]])(?<A>[^\[])-(?<B>[^\[\]])|(?<T>)(?<A>[^\[])(?<B>))' $0in
     set -l 0out
-    for 0p in (__dotenv_ix (count $T))
+    set -l 0q 1 2 3 4 5 6 7 8
+    set -q T[9]; and set 0q (__dotenv_seq (count $T))
+    for 0p in $0q
+        set -q T[$0p]; or break
         switch "$T[$0p]"
             case '[:'
                 set 0pclass 1
@@ -1059,7 +1242,10 @@ function __dotenv_dsq -S -a 0raw
     end
     set -l 0fmt
     set -l 0arg # literal runs, printed through %s so that nothing in them is interpreted
-    for 0p in (__dotenv_ix (count $K))
+    set -l 0q 1 2 3 4 5 6 7 8
+    set -q K[9]; and set 0q (__dotenv_seq (count $K))
+    for 0p in $0q
+        set -q K[$0p]; or break
         set -l 0v $V[$0p]
         switch $K[$0p]
             case ''
@@ -1119,7 +1305,9 @@ function __dotenv_dsq -S -a 0raw
                 end
         end
     end
-    set 0res (printf (printf %s $0fmt | string collect -N -a) $0arg | string collect -N -a)
+    printf %s $0fmt | read -z -l 0f
+    printf "$0f" $0arg | read -z 0res
+    set -q 0res[1]; or set 0res ''
     return 0
 end
 
