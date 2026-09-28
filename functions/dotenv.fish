@@ -124,7 +124,7 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
              |\x27(?<v>[^\x27]*+)\x27
              |"(?<v>[^"\x5c$`]*+)")
            (?=[\x20\t\n;]|\z)
-          |(?<e>[\s\S]))'
+          |(?<e>[\s\S])[\s\S]*+)'
     # Pieces of a word outside "…" (K: kind, V: text) and inside "…".
     set -l 0pu $0def'\G(?|(?<K>)(?<V>[^\x5c\x27"$`~:/]++)
         |(?<K>[~:/])(?<V>)
@@ -168,23 +168,23 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     set -l 0dl # delimiter absent from the input, for multi-variable `read`
     # Names that some of dash, bash, yash, busybox sh, mksh, ksh93 and zsh
     # (in their POSIX modes) set or maintain themselves, found by
-    # tests/specials.py. 0shdyn: the shell's value can differ from the one in
-    # the environment, so a file may only use it after assigning it itself.
-    # 0shdef: set by some shell when not in the environment.
-    set -l 0shdyn _ BASH BASHOPTS BASHPID BASH_ARGV0 BASH_COMMAND BASH_EXECUTION_STRING BASH_MONOSECONDS \
-        BASH_SUBSHELL BASH_VERSINFO BASH_VERSION COLUMNS COMP_WORDBREAKS CPUTYPE EGID EPOCHREALTIME \
-        EPOCHSECONDS ERRNO FUNCNEST GID HISTCMD HISTSIZE KEYBOARD_HACK KSHEGID KSHGID KSHUID \
-        KSH_VERSION LINENO LINES MACHTYPE MODULE_PATH OLDPWD OPTERR OPTIND OSTYPE PATHSEP PGRP \
-        PIPESTATUS PPID PS1 PS2 PS4 RANDOM SAVEHIST SECONDS SHELLOPTS SHLVL SRANDOM TMOUT \
-        TRY_BLOCK_ERROR TRY_BLOCK_INTERRUPT TTY TTYIDLE UID USERNAME USER_ID VENDOR YASH_VERSION \
-        ZSH_ARGZERO ZSH_EVAL_CONTEXT ZSH_EXECUTION_STRING ZSH_NAME ZSH_PATCHLEVEL ZSH_SUBSHELL \
-        ZSH_VERSION histchars signals
-    set -l 0shdef BASH_ARGC BASH_ARGV BASH_LINENO BASH_LOADABLES_PATH BASH_SOURCE CDPATH DIRSTACK EUID FIGNORE \
-        FPATH FUNCNAME GROUPS HOST HOSTNAME HOSTTYPE KEYTIMEOUT LISTMAX LOGNAME MAILCHECK MAILPATH \
-        NULLCMD OPTARG POSIXLY_CORRECT PS3 PSVAR READNULLCMD SHELL SPROMPT TERM TIMEFMT TMPPREFIX \
-        WORDCHARS YASH_LOADPATH
-
-    for 0f in $0files
+    # tests/specials.py, as regex alternatives. 0shdyn: the shell's value can
+    # differ from the one in the environment, so a file may only use it after
+    # assigning it itself. 0shdef: set by some shell when not in the
+    # environment.
+    set -l 0shdyn '_|BASH|BASHOPTS|BASHPID|BASH_ARGV0|BASH_COMMAND|BASH_EXECUTION_STRING|'\
+'BASH_MONOSECONDS|BASH_SUBSHELL|BASH_VERSINFO|BASH_VERSION|COLUMNS|COMP_WORDBREAKS|CPUTYPE|'\
+'EGID|EPOCHREALTIME|EPOCHSECONDS|ERRNO|FUNCNEST|GID|HISTCMD|HISTSIZE|KEYBOARD_HACK|KSHEGID|'\
+'KSHGID|KSHUID|KSH_VERSION|LINENO|LINES|MACHTYPE|MODULE_PATH|OLDPWD|OPTERR|OPTIND|OSTYPE|'\
+'PATHSEP|PGRP|PIPESTATUS|PPID|PS1|PS2|PS4|RANDOM|SAVEHIST|SECONDS|SHELLOPTS|SHLVL|SRANDOM|'\
+'TMOUT|TRY_BLOCK_ERROR|TRY_BLOCK_INTERRUPT|TTY|TTYIDLE|UID|USERNAME|USER_ID|VENDOR|'\
+'YASH_VERSION|ZSH_ARGZERO|ZSH_EVAL_CONTEXT|ZSH_EXECUTION_STRING|ZSH_NAME|ZSH_PATCHLEVEL|'\
+'ZSH_SUBSHELL|ZSH_VERSION|histchars|signals'
+    set -l 0shdef 'BASH_ARGC|BASH_ARGV|BASH_LINENO|BASH_LOADABLES_PATH|BASH_SOURCE|CDPATH|'\
+'DIRSTACK|EUID|FIGNORE|FPATH|FUNCNAME|GROUPS|HOST|HOSTNAME|HOSTTYPE|KEYTIMEOUT|LISTMAX|LOGNAME|'\
+'MAILCHECK|MAILPATH|NULLCMD|OPTARG|POSIXLY_CORRECT|PS3|PSVAR|READNULLCMD|SHELL|SPROMPT|TERM|'\
+'TIMEFMT|TMPPREFIX|WORDCHARS|YASH_LOADPATH'
+   for 0f in $0files
         set -l 0text
         if test "$0f" = -
             # Only `read` sees a function's standard input. A second read
@@ -254,7 +254,7 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             # Most files contain only literal assignments, comments and blank
             # lines. This grammar is the corresponding subset of $0re (no
             # line continuations, no `export --`); on anything else it leaves
-            # text in e, and the full tokenizer runs instead.
+            # text in e (and stops), and the full tokenizer runs instead.
             string match -raq -- $0lite $0text 2>/dev/null
             and not string length -q -- $e ''
             or string match -raq -- $0re $0text 2>/dev/null
@@ -313,20 +313,28 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
                 return 1
             end
         end
+        # Mark the names that some shell maintains (0d_NAME) or sets when
+        # the environment has not (0f_NAME), for O(1) checks in lookups.
+        for 0nm in (string match -r -- '^(?:'$0shdyn')$' $0refs)
+            set -f 0d_$0nm 1
+        end
+        for 0nm in (string match -r -- '^(?:'$0shdef')$' $0refs)
+            set -f 0f_$0nm 1
+        end
+        # A function cannot read a global `argv`; refuse rather than guess.
+        if contains -- argv $0refs; and begin
+                set -q -g -x argv; or set -q -U -x argv
+            end
+            __dotenv_fail $0f 1 "cannot read the exported variable 'argv' from a fish function"
+            return 1
+        end
         for 0nm in $0refs
             contains -- $0nm $0en $0eu; and continue
-            if test $0nm = argv
-                # A function cannot read a global `argv`; refuse rather than guess.
-                if set -q -g -x argv; or set -q -U -x argv
-                    __dotenv_fail $0f 1 "cannot read the exported variable 'argv' from a fish function"
-                    return 1
-                end
-                set -a 0eu argv
-            else if set -q -x $0nm
+            if test $0nm != argv; and set -q -x $0nm
                 set -a 0en $0nm
                 set -a 0ev "$$0nm"
                 # (lookups inline 0e_ reads; these names must reach __dotenv_lookup)
-                contains -- $0nm IFS $0shdyn
+                test $0nm = IFS; or set -q 0d_$0nm
                 or set -f 0e_$0nm "$$0nm"
             else
                 set -a 0eu $0nm
@@ -407,16 +415,25 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     # itself sets CMD_DURATION (unexported) after each command, dirprev and
     # dirnext on cd, last_pid and fish_bind_mode, and rewrites PATH when
     # fish_user_paths changes: none would keep the value the file gives.
-    set -l 0bad (string match -r -- '^(?:FISH_VERSION|PWD|SHLVL|_|__fish_(?:bin|cache|config|data|help|man|sysconf|user_data)_dir|fish_(?:kill_signal|killring|pid|terminal_color_theme|bind_mode|user_paths)|history|hostname|pipestatus|status|status_generation|umask|version|CMD_DURATION|dirprev|dirnext|last_pid)$' $0cn '')
-    if set -q 0bad[1]
-        printf 'dotenv: cannot set %s: it is a read-only or special fish variable\n' $0bad[1] >&2
-        return 1
-    end
+    set -l 0fishro 'FISH_VERSION|PWD|SHLVL|_|__fish_(?:bin|cache|config|data|help|man|sysconf|'\
+'user_data)_dir|fish_(?:kill_signal|killring|pid|terminal_color_theme|bind_mode|user_paths)|'\
+'history|hostname|pipestatus|status|status_generation|umask|version|CMD_DURATION|dirprev|'\
+'dirnext|last_pid'
     # Shells that make these read-only, compute them or validate them differ
     # in what assigning them does (see tests/specials.py).
-    set 0bad (string match -r -- '^(?:BASHOPTS|BASHPID|BASH_ALIASES|BASH_ARGC|BASH_ARGV|BASH_ARGV0|BASH_CMDS|BASH_COMMAND|BASH_COMPAT|BASH_LINENO|BASH_MONOSECONDS|BASH_SOURCE|BASH_SUBSHELL|BASH_VERSINFO|BASH_XTRACEFD|COLUMNS|COMP_WORDBREAKS|DIRSTACK|EGID|EPOCHREALTIME|EPOCHSECONDS|ERRNO|EUID|FUNCNAME|FUNCNEST|GID|GROUPS|HISTCMD|HISTSIZE|KSHEGID|KSHGID|KSHUID|KSH_VERSION|LINENO|LINES|OPTIND|PGRP|PIPESTATUS|PPID|RANDOM|SAVEHIST|SECONDS|SHELLOPTS|SRANDOM|TMOUT|TRY_BLOCK_ERROR|TRY_BLOCK_INTERRUPT|TTYIDLE|UID|USERNAME|USER_ID|ZSH_EVAL_CONTEXT|ZSH_SUBSHELL|signals)$' $0cn '')
+    set -l 0shset 'BASHOPTS|BASHPID|BASH_ALIASES|BASH_ARGC|BASH_ARGV|BASH_ARGV0|BASH_CMDS|'\
+'BASH_COMMAND|BASH_COMPAT|BASH_LINENO|BASH_MONOSECONDS|BASH_SOURCE|BASH_SUBSHELL|BASH_VERSINFO|'\
+'BASH_XTRACEFD|COLUMNS|COMP_WORDBREAKS|DIRSTACK|EGID|EPOCHREALTIME|EPOCHSECONDS|ERRNO|EUID|'\
+'FUNCNAME|FUNCNEST|GID|GROUPS|HISTCMD|HISTSIZE|KSHEGID|KSHGID|KSHUID|KSH_VERSION|LINENO|LINES|'\
+'OPTIND|PGRP|PIPESTATUS|PPID|RANDOM|SAVEHIST|SECONDS|SHELLOPTS|SRANDOM|TMOUT|TRY_BLOCK_ERROR|'\
+'TRY_BLOCK_INTERRUPT|TTYIDLE|UID|USERNAME|USER_ID|ZSH_EVAL_CONTEXT|ZSH_SUBSHELL|signals'
+    set -l 0bad (string match -r -- '^(?:'$0fishro'|'$0shset')$' $0cn '')
     if set -q 0bad[1]
-        printf 'dotenv: cannot set %s: some shells maintain it themselves, so the result would depend on the shell\n' $0bad[1] >&2
+        if string match -rq -- '^(?:'$0fishro')$' $0bad[1]
+            printf 'dotenv: cannot set %s: it is a read-only or special fish variable\n' $0bad[1] >&2
+        else
+            printf 'dotenv: cannot set %s: some shells maintain it themselves, so the result would depend on the shell\n' $0bad[1] >&2
+        end
         return 1
     end
 
@@ -676,7 +693,7 @@ end
 function __dotenv_word -S -a 0raw 0mode
     # Usual case first: literal text, "…", $NAME, ${NAME} and ${NAME op word}
     # (op one of - + = ? with or without a colon) with a literal word; no
-    # backslash, single quote, backquote, ~ or other use of $; at most 8
+    # backslash, single quote, backquote, ~ or other use of $; at most 16
     # pieces. Quote characters then only delimit literal text, so the regex
     # skips them (inside ${…} within "…" a quote is unspecified: not here).
     # T: text; R: a parameter name, with operator O and word W; X: anything
@@ -695,9 +712,9 @@ function __dotenv_word -S -a 0raw 0mode
     end
     if test $0mode != D; or not string match -q -- '*"*' $0raw
         string match -raq -- '(?|(?<T>[^"$\x5c\x27`~]++)(?<R>)(?<O>)(?<W>)|(?<T>)\$\{(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?:(?<O>:?[-=?+])(?<W>[^}"$\x5c\x27`~]*+))?+\}|(?<T>)\$(?<R>[A-Za-z_][A-Za-z0-9_]*+)(?<O>)(?<W>))|(?<X>[\x5c\x27`~$])' $0raw
-        if not string length -q -- $X ''; and not set -q T[9]
+        if not string length -q -- $X ''; and not set -q T[17]
             set -l 0acc ''
-            for 0p in 1 2 3 4 5 6 7 8
+            for 0p in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
                 set -q T[$0p]; or break
                 if test -z "$R[$0p]"
                     set 0acc "$0acc$T[$0p]"
@@ -1097,7 +1114,7 @@ function __dotenv_lookup -S -a 0nm
         set 0res ' '\t\n
         return 0
     end
-    if contains -- $0nm $0shdyn
+    if set -q 0d_$0nm
         set 0err "\$$0nm is set or maintained by the shell itself, differently in different shells; it is not supported unless the file assigns it first"
         return 1
     end
@@ -1106,7 +1123,7 @@ function __dotenv_lookup -S -a 0nm
         set 0res "$$0k"
         return 0
     end
-    if contains -- $0nm $0shdef
+    if set -q 0f_$0nm
         set 0err "\$$0nm is not in the environment, and some shells set it themselves when it is not: its value would depend on the shell"
         return 1
     end
