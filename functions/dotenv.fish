@@ -64,6 +64,8 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     #    no quoting at all (the "…" around it and the pattern's own rules
     #    conflict; POSIX makes any unescaped " there unspecified)
     # 19 ${…} body nested in such a pattern: no quoting either
+    # In the words of ${…} (4 10 17 18), an unquoted <( or >( is refused:
+    # bash reads a process substitution there (and runs it).
     # Only the forms POSIX specifies are ${…} bodies, even where the
     # expansion is never evaluated: yash and ksh93 reject e.g. ${x:1} or
     # ${x/a/b} when parsing. Special parameters are not supported at all.
@@ -78,13 +80,13 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         ([\x20\t]|\x5c\n)
         (\#[^\n]*+)
         ([A-Za-z_][A-Za-z0-9_]*+)
-        ((?:[^}\x5c\x27"$`]++|(?15)|(?7))*+)
+        ((?:[^}\x5c\x27"$`<>]++|[<>](?!(?:\x5c\n)*+\()|(?15)|(?7))*+)
         ([^\x20\t\n;&|<>()\x5c\x27"$`\x{A0}\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]++)
         (\x5c[\s\S]|\x27[^\x27]*+\x27|\$\x27(?13)\x27|"(?12)")
         (\$(?:\{(?8)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n]|\z)))
         (\#(?3)|(?3)(?:(?:%%?+|\#\#?+|:?+[-=?+])(?4))?+)
         (\#(?3)|(?3)(?:(?:%%?+|\#\#?+)(?4)|:?+[-=?+](?10))?+)
-        ((?:[^}"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?16)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
+        ((?:[^}"\x5c$`<>]++|[<>](?!(?:\x5c\n)*+\()|\x5c[\s\S]|\$(?:\{(?16)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
         ((?:(?5)|(?6)|(?7))++)
         ((?:[^"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n\x27])))*+)
         ((?:[^\x27\x5c]++|\x5c["\x27\x5cabefnrtv]|\x5cc(?:\x5c\x5c|[A-Za-z\[\]^_?])
@@ -93,8 +95,8 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         ((?:[^"\x5c$`]++|\x5c[^}]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n\x27])))*+)
         (\x5c[\s\S]|\x27[^\x27]*+\x27|\$\x27(?13)\x27|"(?14)")
         (\#(?3)|(?3)(?:(?:%%?+|\#\#?+)(?18)|:?+[-=?+](?17))?+)
-        ((?:[^}"\x5c$`\x27]++|\x5c[\s\S]|\$(?:\{(?16)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
-        ((?!~)(?:[^}"\x5c$`\x27]++|\$(?:\{(?19)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
+        ((?:[^}"\x5c$`\x27<>]++|[<>](?!(?:\x5c\n)*+\()|\x5c[\s\S]|\$(?:\{(?16)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
+        ((?!~)(?:[^}"\x5c$`\x27<>]++|[<>](?!(?:\x5c\n)*+\()|\$(?:\{(?19)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
         (\#(?3)|(?3)(?:(?:%%?+|\#\#?+|:?+[-=?+])(?18))?+)
     )'
     # Blanks, comments and separators before a word. s is `;` or a newline
@@ -184,7 +186,7 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
 'DIRSTACK|EUID|FIGNORE|FPATH|FUNCNAME|GROUPS|HOST|HOSTNAME|HOSTTYPE|KEYTIMEOUT|LISTMAX|LOGNAME|'\
 'MAILCHECK|MAILPATH|NULLCMD|OPTARG|POSIXLY_CORRECT|PS3|PSVAR|READNULLCMD|SHELL|SPROMPT|TERM|'\
 'TIMEFMT|TMPPREFIX|WORDCHARS|YASH_LOADPATH'
-   for 0f in $0files
+    for 0f in $0files
         set -l 0text
         if test "$0f" = -
             # Only `read` sees a function's standard input. A second read
@@ -1578,12 +1580,16 @@ function __dotenv_syntax -a 0t
         echo "shell operator '"(string sub -l 2 -- $0t)"' is not supported (only assignments, export, ';' and newlines are): $0t"
     else if string match -q -- ';*' $0t
         echo "unexpected ';': $0t"
+    else if string match -rq -- '\$\{[^}]*[<>]\x5c\z' $0t
+        echo "'<' or '>' before '(' inside \${…} (a line continuation between them) is a process substitution to bash; quote it: $0t"
     else if string match -rq -- '\$\{[^}]*\x5c\z' $0t
         echo "line continuation inside the name or operator of \${…} is not supported: $0t"
     else if string match -q -- '*\\' $0t
         echo "backslash at end of input: $0t"
     else if string match -rq -- '[\x{A0}\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]' $0t
         echo "unquoted non-ASCII space (shells disagree whether it separates words); quote it: $0t"
+    else if string match -rq -- '\$\{[^}]*[<>](?:\x5c\n)*\(' $0t
+        echo "'<(' or '>(' inside \${…} is a process substitution to bash; quote it: $0t"
     else if string match -rq -- '\$\{(?:[0-9@*?$!-]|\#(?![A-Za-z_]))' $0t
         echo "special parameters (\$1 \$@ \$\$ \$? …) are not supported: $0t"
     else if string match -rq -- '\$\{(?!\#[A-Za-z_][A-Za-z0-9_]*+\}|[A-Za-z_][A-Za-z0-9_]*+(?:\}|%|\#|:?[-=?+]))' $0t
