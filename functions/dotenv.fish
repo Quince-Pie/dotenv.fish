@@ -10,9 +10,10 @@
 #
 # Local variables start with a digit. fish allows that and POSIX names do
 # not, so no name that a .env file refers to can collide with one of ours.
-# Variables created by `string match` capture groups live in short blocks.
-# Lists are joined with `printf %s … | read -z`, which neither splits on nor
-# trims newlines (command substitutions do, and also cost ~10 µs each).
+# Variables created by `string match` capture groups live in short blocks or
+# are overwritten before use. Strings are built by concatenation ("$a$b") or
+# `printf %s … | read -z`, which neither split on nor trim newlines, as
+# command substitutions would (and they cost ~10 µs each).
 
 function dotenv --description 'Load POSIX .env files into the environment (as `set -a; . FILE` would)'
     set -l 0print 0
@@ -49,6 +50,11 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     # 11 word                           12 contents of "…"
     # 13 contents of $'…': only the escapes POSIX specifies, and none that
     #    yields a NUL or does not fit in a byte (checked even where unused)
+    # 14 contents of "…" inside a ${…} word: no \} (dash, busybox and ksh93
+    #    take it as an escape, bash, yash, mksh and zsh do not)
+    # 15 like 6, for ${…} words
+    # An unbraced $NAME followed by a line continuation and a name character
+    # is refused: removing the continuation would lengthen the name.
     # U+00A0 and the other non-ASCII blanks end an unquoted run: whether they
     # separate words depends on the shell and locale, so they must be quoted.
     # Unbraced special parameters ($1 $$ $@ …) are not tokens at all, so that
@@ -61,15 +67,17 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         ([0-9@*\#?$!-])
         ([^\x20\t\n;&|<>()\x5c\x27"$`\x{A0}\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]++)
         (\x5c[\s\S]|\x27[^\x27]*+\x27|\$\x27(?13)\x27|"(?12)")
-        (\$(?:\{(?8)\}|(?3)|(?=[\x20\t\n]|\z)))
-        ((?:[^}\x5c\x27"$`]++|(?6)|(?7))*+)
+        (\$(?:\{(?8)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n]|\z)))
+        ((?:[^}\x5c\x27"$`]++|(?15)|(?7))*+)
         (\#(?3)|(?3)(?:(?:%%?+|\#\#?+)(?8)|:?+[-=?+](?10))?+|(?4)[^}]*+)
-        ((?:[^}"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?9)\}|(?3)|(?=[\x20\t\n])))*+)
+        ((?:[^}"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
         ((?:(?5)|(?6)|(?7))++)
-        ((?:[^"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?9)\}|(?3)|(?=[\x20\t\n\x27])))*+)
+        ((?:[^"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n\x27])))*+)
         ((?:[^\x27\x5c]++|\x5c["\x27\x5cabefnrtv]|\x5cc(?:\x5c\x5c|[A-Za-z\[\]^_?])
            |\x5cx(?!0{1,2}+(?![0-9A-Fa-f]))[0-9A-Fa-f]{1,2}+(?![0-9A-Fa-f])
            |\x5c(?!0{1,3}+(?![0-7]))(?:[0-3][0-7]{0,2}+|[4-7][0-7]?+(?![0-7])))*+)
+        ((?:[^"\x5c$`]++|\x5c[^}]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n\x27])))*+)
+        (\x5c[\s\S]|\x27[^\x27]*+\x27|\$\x27(?13)\x27|"(?14)")
     )'
     # Blanks, comments and separators before a word. s is `;` or a newline
     # when the word starts a new command.
@@ -276,7 +284,10 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         end
         set -l 0run 1
         set -l 0cmd
-        for 0k in $0ix[1..(count $0cs)]
+        # (0cs is never empty here; the guard keeps the slice from reversing.)
+        set -l 0ks
+        set -q 0cs[1]; and set 0ks $0ix[1..(count $0cs)]
+        for 0k in $0ks
             set -l 0s $0cs[$0k]
             set -l 0e $0ce[$0k]
             if test $0run -lt $0s
@@ -773,6 +784,9 @@ function __dotenv_tildes -S -a 0mode
         set -q K[$0p]; or break
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
+        # A line continuation was removed before tokenization: it neither
+        # ends a tilde prefix nor moves the start of the word.
+        test "$0k" = \\ -a "$0v" = \n; and continue
         if test $0tp = 1
             if test -z "$0k" -a -z "$0login"
                 set 0login $0v
@@ -1030,12 +1044,16 @@ function __dotenv_pattern -S -a 0raw 0star
     set -l 0tp 0 # 1: inside a leading tilde prefix
     set -l 0login ''
     set -l 0colon 0
+    set -l 0first 1 # no piece seen yet (line continuations aside)
     set -l 0q 1 2 3 4 5 6 7 8
     set -q K[9]; and set 0q (__dotenv_seq (count $K))
     for 0p in $0q
         set -q K[$0p]; or break
         set -l 0k $K[$0p]
         set -l 0v $V[$0p]
+        test "$0k" = \\ -a "$0v" = \n; and continue
+        set -l 0wasfirst $0first
+        set 0first 0
         if test $0tp = 1
             if test -z "$0k" -a -z "$0login"
                 set 0login $0v
@@ -1063,7 +1081,7 @@ function __dotenv_pattern -S -a 0raw 0star
                 set -a 0buf /
                 continue
             case '~'
-                if test $0p = 1
+                if test $0wasfirst = 1
                     set 0tp 1
                     continue
                 else if test $0wascolon = 1
@@ -1376,6 +1394,10 @@ function __dotenv_syntax -a 0t
         echo "unterminated \$'…' or an escape in it that POSIX leaves unspecified (only \\\" \\' \\\\ \\a \\b \\e \\f \\n \\r \\t \\v \\cX \\xHH and \\ooo, not yielding NUL): $0t"
     else if string match -rq -- '[\x27"]' $0t
         echo "unterminated or unsupported quoting: $0t"
+    else if string match -rq -- '\$[A-Za-z_][A-Za-z0-9_]*+\x5c\z' $0t
+        echo "a line continuation right after \$NAME would extend the name; use \${NAME}: $0t"
+    else if string match -q -- '*${*\\}*' $0t
+        echo "\\} inside \"…\" within \${…} is taken as an escape by some shells and not by others: $0t"
     else if string match -rq -- '\$[0-9@*#?$!-]' $0t
         echo "special parameters (\$1 \$@ \$\$ \$? …) are not supported: $0t"
     else if string match -q -- '*$*' $0t
