@@ -43,7 +43,9 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     # Sub-patterns shared by all regexes, called by number. They are unnamed
     # so that `string match` does not turn them into variables.
     #  1 blank or line continuation     2 comment     3 name
-    #  4 special parameter              5 unquoted literal run
+    #  4 word of ${x-word} and pattern of ${x%word} etc. outside "…", and
+    #    pattern of ${x%word} etc. inside "…" (where quotes keep their effect)
+    #  5 unquoted literal run
     #  6 \c '…' $'…' or "…"             7 $name ${…} or a lone $
     #  8 ${…} body outside "…"          9 ${…} body inside "…"
     # 10 word of ${x-word} etc. inside "…"
@@ -53,6 +55,14 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     # 14 contents of "…" inside a ${…} word: no \} (dash, busybox and ksh93
     #    take it as an escape, bash, yash, mksh and zsh do not)
     # 15 like 6, for ${…} words
+    # 16 ${…} body nested in a word of 10: its word (17) has no single quote
+    #    (yash reads a quote there, the others a literal '), its pattern (18)
+    #    no quoting at all (the "…" around it and the pattern's own rules
+    #    conflict; POSIX makes any unescaped " there unspecified)
+    # 19 ${…} body nested in such a pattern: no quoting either
+    # Only the forms POSIX specifies are ${…} bodies, even where the
+    # expansion is never evaluated: yash and ksh93 reject e.g. ${x:1} or
+    # ${x/a/b} when parsing. Special parameters are not supported at all.
     # An unbraced $NAME followed by a line continuation and a name character
     # is refused: removing the continuation would lengthen the name.
     # U+00A0 and the other non-ASCII blanks end an unquoted run: whether they
@@ -64,13 +74,13 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         ([\x20\t]|\x5c\n)
         (\#[^\n]*+)
         ([A-Za-z_][A-Za-z0-9_]*+)
-        ([0-9@*\#?$!-])
+        ((?:[^}\x5c\x27"$`]++|(?15)|(?7))*+)
         ([^\x20\t\n;&|<>()\x5c\x27"$`\x{A0}\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]++)
         (\x5c[\s\S]|\x27[^\x27]*+\x27|\$\x27(?13)\x27|"(?12)")
         (\$(?:\{(?8)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n]|\z)))
-        ((?:[^}\x5c\x27"$`]++|(?15)|(?7))*+)
-        (\#(?3)|(?3)(?:(?:%%?+|\#\#?+)(?8)|:?+[-=?+](?10))?+|(?4)[^}]*+)
-        ((?:[^}"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
+        (\#(?3)|(?3)(?:(?:%%?+|\#\#?+|:?+[-=?+])(?4))?+)
+        (\#(?3)|(?3)(?:(?:%%?+|\#\#?+)(?4)|:?+[-=?+](?10))?+)
+        ((?:[^}"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?16)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
         ((?:(?5)|(?6)|(?7))++)
         ((?:[^"\x5c$`]++|\x5c[\s\S]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n\x27])))*+)
         ((?:[^\x27\x5c]++|\x5c["\x27\x5cabefnrtv]|\x5cc(?:\x5c\x5c|[A-Za-z\[\]^_?])
@@ -78,6 +88,10 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
            |\x5c(?!0{1,3}+(?![0-7]))(?:[0-3][0-7]{0,2}+|[4-7][0-7]?+(?![0-7])))*+)
         ((?:[^"\x5c$`]++|\x5c[^}]|\$(?:\{(?9)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n\x27])))*+)
         (\x5c[\s\S]|\x27[^\x27]*+\x27|\$\x27(?13)\x27|"(?14)")
+        (\#(?3)|(?3)(?:(?:%%?+|\#\#?+)(?18)|:?+[-=?+](?17))?+)
+        ((?:[^}"\x5c$`\x27]++|\x5c[\s\S]|\$(?:\{(?16)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
+        ((?!~)(?:[^}"\x5c$`\x27]++|\$(?:\{(?19)\}|(?3)(?!(?:\x5c\n)++[A-Za-z0-9_])|(?=[\x20\t\n])))*+)
+        (\#(?3)|(?3)(?:(?:%%?+|\#\#?+|:?+[-=?+])(?18))?+)
     )'
     # Blanks, comments and separators before a word. s is `;` or a newline
     # when the word starts a new command.
@@ -141,8 +155,8 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     set -l 0res # result of the last helper
     set -l 0lset # set by __dotenv_lookup: 1 if the parameter is set
     set -l 0utf8 # 1/0 once known: is the environment's LC_CTYPE UTF-8?
-    set -l 0pwild # set by __dotenv_pattern: ? or […] used
-    set -l 0pclass # set by __dotenv_pattern: [:class:] used
+    set -l 0pwild 0 # set to 1 by __dotenv_glob: ? or […] used in the pattern
+    set -l 0pclass 0 # set to 1 by __dotenv_bracket: [:class:] used
     # Values assigned so far are also kept in variables 0v_NAME, and the
     # environment snapshot in 0e_NAME: O(1) lookups (digit-led, so they
     # cannot collide with POSIX names). Helpers loop over short literal index
@@ -883,8 +897,9 @@ function __dotenv_tilde -S -a 0login 0next
     return 0
 end
 
-# ${…} with body $argv[1]; $argv[2] is u (outside "…") or q (inside).
-function __dotenv_param -S -a 0body 0ctx
+# ${…} with body $argv[1]; $argv[2] is u (outside "…"), q (inside) or p (in
+# a pattern: the result is a PCRE fragment; $argv[3] is the regex for `*`).
+function __dotenv_param -S -a 0body 0ctx 0pstar
     set -l Bl
     set -l Bn
     set -l Bo
@@ -901,18 +916,26 @@ function __dotenv_param -S -a 0body 0ctx
     set -l 0set $0lset
     set -l 0val $0res
     if test -n "$Bl"
-        __dotenv_length $0val
+        __dotenv_length $0val; or return 1
+        test $0ctx = p; or return 0
+        __dotenv_valpat $0res $0pstar
         return
     end
     set -l 0wm u
     test $0ctx = q; and set 0wm D
     set -l 0null 0
     test -z "$0val"; and set 0null 1
+    # In a pattern, the word of - :- + :+ keeps its quoting (\* matches a
+    # literal *), while a parameter's value is itself a pattern.
     switch "$Bo"
         case ''
             set 0res $0val
         case - :-
             if test $0set = 0 -o \( "$Bo" = :- -a $0null = 1 \)
+                if test $0ctx = p
+                    __dotenv_pattern "$Bw" $0pstar
+                    return
+                end
                 __dotenv_word "$Bw" $0wm; or return 1
             else
                 set 0res $0val
@@ -939,6 +962,10 @@ function __dotenv_param -S -a 0body 0ctx
             set 0res $0val
         case + :+
             if test $0set = 1 -a \( "$Bo" = + -o $0null = 0 \)
+                if test $0ctx = p
+                    __dotenv_pattern "$Bw" $0pstar
+                    return
+                end
                 __dotenv_word "$Bw" $0wm; or return 1
             else
                 set 0res ''
@@ -952,10 +979,32 @@ function __dotenv_param -S -a 0body 0ctx
             end
             set -l 0star '.*'
             test "$Bo" = '#'; and set 0star '.*?'
+            # (this pattern's flags are its own, not those of a pattern that
+            # this expansion may be part of)
+            set -l 0flags $0pwild $0pclass
+            set 0pwild 0
+            set 0pclass 0
             __dotenv_pattern "$Bw" $0star; or return 1
             __dotenv_strip "$Bo" $0val $0res; or return 1
+            set 0pwild $0flags[1]
+            set 0pclass $0flags[2]
+    end
+    if test $0ctx = p
+        __dotenv_valpat $0res $0pstar
+        return
     end
     return 0
+end
+
+# A parameter's value used unquoted in a pattern is a pattern itself:
+# $argv[1] as a PCRE fragment in $0res ($argv[2]: the regex for `*`).
+function __dotenv_valpat -S -a 0val 0star
+    # (whether a backslash or [ from an expansion is special differs)
+    if string match -rq -- '[\[\x5c]' $0val
+        set 0err "unquoted expansion in a pattern yields '[' or '\\'; quote the expansion"
+        return 1
+    end
+    __dotenv_glob $0val $0star
 end
 
 # Value of the parameter $argv[1]: 0lset=1 and 0res=value if it is set.
@@ -1059,8 +1108,6 @@ function __dotenv_pattern -S -a 0raw 0star
         set 0err (__dotenv_badchar (printf %s $Z))
         return 1
     end
-    set 0pwild 0
-    set 0pclass 0
     set -l 0out
     set -l 0buf # unquoted literal text not yet globbed
     set -l 0tp 0 # 1: inside a leading tilde prefix
@@ -1131,26 +1178,16 @@ function __dotenv_pattern -S -a 0raw 0star
             case \"
                 __dotenv_word $0v d; or return 1
                 set -a 0out (string escape --style=regex -- $0res)
-            case \$\{ \$
-                if test $0k = \$
-                    if test -z "$0v"
-                        set -a 0out '\$'
-                        continue
-                    end
-                    if not string match -rq -- '\A[A-Za-z_]' $0v
-                        set 0err "special parameter \$$0v is not supported"
-                        return 1
-                    end
-                    __dotenv_lookup $0v; or return 1
-                else
-                    __dotenv_param $0v u; or return 1
+            case \$\{
+                __dotenv_param $0v p $0star; or return 1
+                set -a 0out $0res
+            case \$
+                if test -z "$0v"
+                    set -a 0out '\$'
+                    continue
                 end
-                # An unquoted expansion inside a pattern is itself a pattern.
-                if string match -rq -- '[\[\x5c]' $0res
-                    set 0err "unquoted expansion in a pattern yields '[' or '\\'; quote the expansion"
-                    return 1
-                end
-                __dotenv_glob $0res $0star; or return 1
+                __dotenv_lookup $0v; or return 1
+                __dotenv_valpat $0res $0star; or return 1
                 set -a 0out $0res
         end
     end
@@ -1258,6 +1295,12 @@ end
 # Remove from $argv[2] the prefix or suffix ($argv[1]) matched by PCRE
 # fragment $argv[3]. Lazy/greedy repetition gives the smallest/largest one.
 function __dotenv_strip -S -a 0op 0val 0pat
+    # A byte that is not part of a UTF-8 character (fish keeps it as
+    # U+F600…U+F6FF) could match part of a character in the shell.
+    if string match -rq -- '[\x{F600}-\x{F6FF}]' $0pat
+        set 0err "patterns with bytes that are not UTF-8 text are not supported"
+        return 1
+    end
     if test $0pwild = 1; and string match -rq -- '[^\x00-\x7F]' $0val
         __dotenv_chars $0val; or return 1
         if test $0pclass = 1
@@ -1408,10 +1451,18 @@ function __dotenv_syntax -a 0t
         echo "shell operator '"(string sub -l 2 -- $0t)"' is not supported (only assignments, export, ';' and newlines are): $0t"
     else if string match -q -- ';*' $0t
         echo "unexpected ';': $0t"
+    else if string match -rq -- '\$\{[^}]*\x5c\z' $0t
+        echo "line continuation inside the name or operator of \${…} is not supported: $0t"
     else if string match -q -- '*\\' $0t
         echo "backslash at end of input: $0t"
     else if string match -rq -- '[\x{A0}\x{1680}\x{180E}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]' $0t
         echo "unquoted non-ASCII space (shells disagree whether it separates words); quote it: $0t"
+    else if string match -rq -- '\$\{(?:[0-9@*?$!-]|\#(?![A-Za-z_]))' $0t
+        echo "special parameters (\$1 \$@ \$\$ \$? …) are not supported: $0t"
+    else if string match -rq -- '\$\{(?!\#[A-Za-z_][A-Za-z0-9_]*+\}|[A-Za-z_][A-Za-z0-9_]*+(?:\}|%|\#|:?[-=?+]))' $0t
+        echo "unsupported parameter expansion (POSIX forms only: \${NAME} \${#NAME} \${NAME<op>word} with <op> one of - :- = := ? :? + :+ % %% # ##, and no line continuation inside the name or operator): $0t"
+    else if string match -rq -- '"[^"]*?\$\{[A-Za-z_][A-Za-z0-9_]*+:?[-=?+][^}"]*?\$\{[^}]*?[\x27"\x5c]' $0t
+        echo "quoting inside a \${…} nested in the word of a double-quoted \${…} is not supported (shells read it differently): $0t"
     else if string match -q -- "*\$'*" $0t
         echo "unterminated \$'…' or an escape in it that POSIX leaves unspecified (only \\\" \\' \\\\ \\a \\b \\e \\f \\n \\r \\t \\v \\cX \\xHH and \\ooo, not yielding NUL): $0t"
     else if string match -rq -- '[\x27"]' $0t

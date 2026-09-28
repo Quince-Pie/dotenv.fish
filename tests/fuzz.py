@@ -16,7 +16,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import difftest  # noqa: E402
 
-NAMES = ["A", "B", "C", "D1", "_u", "X_PATH", "PRESET", "EMPTY", "HOME", "UNSET_V", "LANG_X"]
+NAMES = ["A", "B", "C", "D1", "_u", "X_PATH", "PRESET", "EMPTY", "HOME", "UNSET_V", "LANG_X", "G"]
+# values of G that are special in patterns
+GLOBVALS = ["'ab*'", "'*x*'", "'a?c'", "'[ab]'", "'a\\b'", "'\u00e9*'", "'x*y'", "'*'"]
 REFS = NAMES + ["NOPE", "PWD"]
 PLAIN = list("abcXYZ019_-+.,@%^=#!{}/:~*?[]") + ["é", "日", "\r"]
 SQ_CHARS = list("ab \t\"$`\\#;&|<>(){}*?~:/=\n") + ["é"]
@@ -78,7 +80,10 @@ def param(rnd, depth, in_dq=False):
         return "${" + name + "}"
     if op in ("#", "##", "%", "%%"):
         w = rnd.choice(["*", "?", "a*", "*e", "[a-z]", "[!e]*", "[[:space:]]*", "*[pqr]", "pre", "\"*\"",
-                        "'pre'", "*/", "~", "\\*", "x" + word(rnd, depth)])
+                        "'pre'", "*/", "~", "\\*", "x" + word(rnd, depth),
+                        # nested expansions: a default word keeps its quoting, a value is a pattern
+                        "${NOPE-\\*}", "${NOPE-'*'}", "${NOPE-\"*\"}", "${G}", "$G", "\"$G\"", "*${PRESET:+\\?}",
+                        "${G%\\*}", "?${NOPE%x}", "${NOPE-*}", "${NOPE:-$G}", "${NOPE-\"$G\"}"])
     else:
         w = dq(rnd, depth) if in_dq and r() < 0.6 else word(rnd, depth)
     return "${" + name + op + w + "}"
@@ -103,6 +108,8 @@ def document(rnd):
     lines = []
     if r() < 0.1:
         lines.append("# header")
+    if r() < 0.4:
+        lines.append("G=" + rnd.choice(GLOBVALS))
     for _ in range(rnd.randint(1, 5)):
         c = command(rnd)
         if r() < 0.15:
@@ -128,7 +135,7 @@ def run(seed_n):
     seed, n = seed_n
     rnd = random.Random(seed)
     text = document(rnd)
-    if rnd.random() < 0.35:
+    if rnd.random() < 0.5:
         text = mutate(rnd, text)
     env = ""
     nonconf = set()
@@ -147,6 +154,11 @@ def run(seed_n):
         nonconf.add("dash")              # dash 0.5.13: ${UNSET+é} yields é in UTF-8 locales
     if "export" in text:
         nonconf.add("zsh")               # expands export operands after prefix assignments
+    if any(ord(ch) > 127 for ch in text):
+        if re.search(r"\$\{[A-Za-z_][A-Za-z0-9_]*(%|#)", text):
+            nonconf |= {"busybox", "mksh"}   # byte-oriented pattern matching (cases/pat_unicode.env)
+        if "${#" in text:
+            nonconf.add("mksh")              # byte lengths (cases/p_length.env)
     if nonconf:
         env += "# nonconforming: " + ",".join(sorted(nonconf)) + "\n"
     fd, path = tempfile.mkstemp(suffix=".env", dir=WORK)
