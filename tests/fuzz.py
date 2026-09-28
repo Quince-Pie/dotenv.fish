@@ -19,7 +19,7 @@ import difftest  # noqa: E402
 NAMES = ["A", "B", "C", "D1", "_u", "X_PATH", "PRESET", "EMPTY", "HOME", "UNSET_V", "LANG_X", "G"]
 # values of G that are special in patterns
 GLOBVALS = ["'ab*'", "'*x*'", "'a?c'", "'[ab]'", "'a\\b'", "'\u00e9*'", "'x*y'", "'*'"]
-REFS = NAMES + ["NOPE", "PWD"]
+REFS = NAMES + ["NOPE", "PWD", "IFS", "TERM", "HOSTNAME", "SHLVL", "RANDOM", "USER", "OPTIND"]
 PLAIN = list("abcXYZ019_-+.,@%^=#!{}/:~*?[]") + ["é", "日", "\r"]
 SQ_CHARS = list("ab \t\"$`\\#;&|<>(){}*?~:/=\n") + ["é"]
 DQ_PIECES = ["a", "b", " ", "\t", "'", "#", ";", "&", "|", "<", ">", "(", ")", "~", ":", "/", "*", "\n",
@@ -96,7 +96,7 @@ def command(rnd):
     words = [assignment(rnd) for _ in range(rnd.randint(1, 3))]
     if k < 0.2:
         pre = words[:rnd.randint(0, 1)]
-        ops = [assignment(rnd) if r() < 0.8 else rnd.choice(NAMES) for _ in range(rnd.randint(0, 2))]
+        ops = [assignment(rnd) if r() < 0.8 else rnd.choice(REFS) for _ in range(rnd.randint(0, 2))]
         words = pre + ["export"] + (["--"] if r() < 0.1 else []) + ops
     sep = rnd.choice([" ", " ", "\t", " \\\n "])
     text = sep.join(words)

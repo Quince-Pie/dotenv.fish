@@ -51,7 +51,7 @@ def run_fish(path, extra=None, setup="", timeout=20):
     if r.returncode != 0:
         return ("err", r.stderr.decode("utf-8", "replace").strip() or f"exit {r.returncode}")
     before, after = shells.parse_env0(b.stdout), shells.parse_env0(r.stdout)
-    noise = shells.NOISE | {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"}
+    noise = shells.noise_for(path) | {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"}
     diff = {k: v for k, v in after.items() if k not in noise and before.get(k) != v}
     for k in before:
         if k not in after and k not in noise:
@@ -80,7 +80,7 @@ ADVISORY = {"ksh93"}
 
 def verdict(path):
     dv = directives(path)
-    sh_all = shells.run_all(path, dv["env"])
+    sh_all = shells.run_all(path, dv["env"], setup=dv["setup"])
     sh = {s: r for s, r in sh_all.items() if s not in dv["nonconforming"] and s not in ADVISORY}
     fi = run_fish(path, dv["env"], dv["setup"])
     results = {json.dumps(r[1] if r[0] == "ok" else "ERR", sort_keys=True, default=lambda b: b.decode("latin1")) for r in sh.values()}

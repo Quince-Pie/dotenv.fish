@@ -162,6 +162,23 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     # cannot collide with POSIX names). Helpers loop over short literal index
     # lists, since a command substitution costs ~10 µs in fish.
     set -l 0dl # delimiter absent from the input, for multi-variable `read`
+    # Names that some of dash, bash, yash, busybox sh, mksh, ksh93 and zsh
+    # (in their POSIX modes) set or maintain themselves, found by
+    # tests/specials.py. 0shdyn: the shell's value can differ from the one in
+    # the environment, so a file may only use it after assigning it itself.
+    # 0shdef: set by some shell when not in the environment.
+    set -l 0shdyn _ BASH BASHOPTS BASHPID BASH_ARGV0 BASH_COMMAND BASH_EXECUTION_STRING BASH_MONOSECONDS \
+        BASH_SUBSHELL BASH_VERSINFO BASH_VERSION COLUMNS COMP_WORDBREAKS CPUTYPE EGID EPOCHREALTIME \
+        EPOCHSECONDS ERRNO FUNCNEST GID HISTCMD HISTSIZE KEYBOARD_HACK KSHEGID KSHGID KSHUID \
+        KSH_VERSION LINENO LINES MACHTYPE MODULE_PATH OLDPWD OPTERR OPTIND OSTYPE PATHSEP PGRP \
+        PIPESTATUS PPID PS1 PS2 PS4 RANDOM SAVEHIST SECONDS SHELLOPTS SHLVL SRANDOM TMOUT \
+        TRY_BLOCK_ERROR TRY_BLOCK_INTERRUPT TTY TTYIDLE UID USERNAME USER_ID VENDOR YASH_VERSION \
+        ZSH_ARGZERO ZSH_EVAL_CONTEXT ZSH_EXECUTION_STRING ZSH_NAME ZSH_PATCHLEVEL ZSH_SUBSHELL \
+        ZSH_VERSION histchars signals
+    set -l 0shdef BASH_ARGC BASH_ARGV BASH_LINENO BASH_LOADABLES_PATH BASH_SOURCE CDPATH DIRSTACK EUID FIGNORE \
+        FPATH FUNCNAME GROUPS HOST HOSTNAME HOSTTYPE KEYTIMEOUT LISTMAX LOGNAME MAILCHECK MAILPATH \
+        NULLCMD OPTARG POSIXLY_CORRECT PS3 PSVAR READNULLCMD SHELL SPROMPT TERM TIMEFMT TMPPREFIX \
+        WORDCHARS YASH_LOADPATH
 
     for 0f in $0files
         set -l 0text
@@ -259,6 +276,8 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
         begin
             set -l q
             string match -raq -- '\$\{?\#?(?<q>[A-Za-z_][A-Za-z0-9_]*+)' $0text
+            # (and names that are words, e.g. operands of `export`)
+            set -a q (string replace -a \\\n '' -- $0W '' | string match -r -- '\A[A-Za-z_][A-Za-z0-9_]*\z')
             set -f 0refs (path sort -u -- $q HOME LC_ALL LC_CTYPE LC_COLLATE LANG)
         end
         for 0nm in $0refs
@@ -274,7 +293,7 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
                 set -a 0en $0nm
                 set -a 0ev "$$0nm"
                 # (lookups inline 0e_ reads; these names must reach __dotenv_lookup)
-                contains -- $0nm IFS LINENO OPTIND PPID PS1 PS2 PS4
+                contains -- $0nm IFS $0shdyn
                 or set -f 0e_$0nm "$$0nm"
             else
                 set -a 0eu $0nm
@@ -355,6 +374,13 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
     set -l 0bad (string match -r -- '^(?:FISH_VERSION|PWD|SHLVL|_|__fish_(?:bin|cache|config|data|help|man|sysconf|user_data)_dir|fish_(?:kill_signal|killring|pid|terminal_color_theme)|history|hostname|pipestatus|status|status_generation|umask|version)$' $0cn '')
     if set -q 0bad[1]
         printf 'dotenv: cannot set %s: it is a read-only or special fish variable\n' $0bad[1] >&2
+        return 1
+    end
+    # Shells that make these read-only, compute them or validate them differ
+    # in what assigning them does (see tests/specials.py).
+    set 0bad (string match -r -- '^(?:BASHOPTS|BASHPID|BASH_ALIASES|BASH_ARGC|BASH_ARGV|BASH_ARGV0|BASH_CMDS|BASH_COMMAND|BASH_COMPAT|BASH_LINENO|BASH_MONOSECONDS|BASH_SOURCE|BASH_SUBSHELL|BASH_VERSINFO|BASH_XTRACEFD|COLUMNS|COMP_WORDBREAKS|DIRSTACK|EGID|EPOCHREALTIME|EPOCHSECONDS|ERRNO|EUID|FUNCNAME|FUNCNEST|GID|GROUPS|HISTCMD|HISTSIZE|KSHEGID|KSHGID|KSHUID|KSH_VERSION|LINENO|LINES|OPTIND|PGRP|PIPESTATUS|PPID|RANDOM|SAVEHIST|SECONDS|SHELLOPTS|SRANDOM|TMOUT|TRY_BLOCK_ERROR|TRY_BLOCK_INTERRUPT|TTYIDLE|UID|USERNAME|USER_ID|ZSH_EVAL_CONTEXT|ZSH_SUBSHELL|signals)$' $0cn '')
+    if set -q 0bad[1]
+        printf 'dotenv: cannot set %s: some shells maintain it themselves, so the result would depend on the shell\n' $0bad[1] >&2
         return 1
     end
 
@@ -565,18 +591,31 @@ function __dotenv_command -S
     # then the leading assignments are made (step 4), then export assigns.
     set -l 0opn
     set -l 0opv
+    set -l 0opa # 1: the operand is an assignment, 0: a name
     for 0k in $0ops
-        test $0wk[$0k] = A; or continue
-        __dotenv_value $0k; or return 1
+        if test $0wk[$0k] = A
+            __dotenv_value $0k; or return 1
+            set -a 0opv $0res
+            set -a 0opa 1
+        else
+            set -a 0opv ''
+            set -a 0opa 0
+        end
         set -a 0opn $0wn[$0k]
-        set -a 0opv $0res
     end
     for 0k in $0pre
         __dotenv_value $0k; or return 1
         __dotenv_set $0wn[$0k] $0res
     end
     for 0k in (__dotenv_seq (count $0opn))
-        __dotenv_set $0opn[$0k] $0opv[$0k]
+        if test $0opa[$0k] = 1
+            __dotenv_set $0opn[$0k] $0opv[$0k]
+        else
+            # `export NAME` exports the variable's current value, if it has
+            # one: nothing new unless the shell set it itself (e.g. IFS).
+            __dotenv_lookup $0opn[$0k]; or return 1
+            test $0lset = 1; and __dotenv_set $0opn[$0k] $0res
+        end
     end
     return 0
 end
@@ -1016,19 +1055,23 @@ function __dotenv_lookup -S -a 0nm
         set 0res "$$0k"
         return 0
     end
-    switch $0nm
-        case IFS
-            # 2.5.3: the shell sets IFS to <space><tab><newline> when invoked.
-            set 0res ' '\t\n
-            return 0
-        case LINENO OPTIND PPID PS1 PS2 PS4
-            set 0err "\$$0nm is set by the shell itself, not taken from the environment; it is not supported"
-            return 1
+    if test $0nm = IFS
+        # 2.5.3: the shell sets IFS to <space><tab><newline> when invoked.
+        set 0res ' '\t\n
+        return 0
+    end
+    if contains -- $0nm $0shdyn
+        set 0err "\$$0nm is set or maintained by the shell itself, differently in different shells; it is not supported unless the file assigns it first"
+        return 1
     end
     if set -q 0e_$0nm
         set -l 0k 0e_$0nm
         set 0res "$$0k"
         return 0
+    end
+    if contains -- $0nm $0shdef
+        set 0err "\$$0nm is not in the environment, and some shells set it themselves when it is not: its value would depend on the shell"
+        return 1
     end
     set 0lset 0
     set 0res ''
