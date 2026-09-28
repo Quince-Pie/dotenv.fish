@@ -280,6 +280,29 @@ function dotenv --description 'Load POSIX .env files into the environment (as `s
             set -a q (string replace -a \\\n '' -- $0W '' | string match -r -- '\A[A-Za-z_][A-Za-z0-9_]*\z')
             set -f 0refs (path sort -u -- $q HOME LC_ALL LC_CTYPE LC_COLLATE LANG)
         end
+        # busybox exports RANDOM, EPOCHSECONDS and EPOCHREALTIME as soon as
+        # it reads an expansion of one, even one that is never evaluated. The
+        # file is tokenized again with a grammar in which these are no
+        # parameter names: it fails only if the file has such an expansion
+        # (not merely the text, e.g. in a comment or single quotes).
+        if contains -- RANDOM $0refs; or contains -- EPOCHSECONDS $0refs; or contains -- EPOCHREALTIME $0refs
+            set -l s
+            set -l x
+            set -l n
+            set -l v
+            set -l r
+            set -l w
+            set -l e
+            set -l 0rdef (string replace -- '        ([A-Za-z_][A-Za-z0-9_]*+)'\n \
+                '        ((?!(?:RANDOM|EPOCHSECONDS|EPOCHREALTIME)(?![A-Za-z0-9_]))[A-Za-z_][A-Za-z0-9_]*+)'\n \
+                $0def | string collect)
+            string match -raq -- $0rdef'\G'$0gap$0word $0text 2>/dev/null
+            if test $status -gt 1; or string length -q -- $e ''
+                set -l 0i (contains -i -- (string match -rv -- '\A\z' $e)[1] $e)
+                __dotenv_fail $0f (__dotenv_line $0i) "the file expands \$RANDOM, \$EPOCHSECONDS or \$EPOCHREALTIME, which some shells maintain themselves (busybox even exports them when an expansion of them is only read); not supported"
+                return 1
+            end
+        end
         for 0nm in $0refs
             contains -- $0nm $0en $0eu; and continue
             if test $0nm = argv
@@ -1176,6 +1199,7 @@ function __dotenv_pattern -S -a 0raw 0star
                 return 1
             end
             __dotenv_tilde $0login /; or return 1
+            __dotenv_tilde_pattern; or return 1
             set -a 0out (string escape --style=regex -- $0res)
             set 0tp 0
         end
@@ -1236,6 +1260,7 @@ function __dotenv_pattern -S -a 0raw 0star
     end
     if test $0tp = 1
         __dotenv_tilde $0login ''; or return 1
+        __dotenv_tilde_pattern; or return 1
         set -a 0out (string escape --style=regex -- $0res)
     end
     if set -q 0buf[1]
@@ -1246,6 +1271,15 @@ function __dotenv_pattern -S -a 0raw 0star
     end
     __dotenv_join
     return 0
+end
+
+# A tilde expansion is quoted (2.6.1), so in a pattern it matches itself;
+# yash takes pattern characters in it as special, though.
+function __dotenv_tilde_pattern -S
+    if string match -rq -- '[*?[\x5c]' $0res
+        set 0err "the home directory '$0res' contains pattern characters, which some shells take as special in a pattern after tilde expansion"
+        return 1
+    end
 end
 
 # Unquoted pattern text into a PCRE fragment. $argv[2]: regex for `*`.

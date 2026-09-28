@@ -139,6 +139,9 @@ def run(seed_n):
         text = mutate(rnd, text)
     env = ""
     nonconf = set()
+    raw = text
+    # (annotate from the text with line continuations removed as well)
+    text = text + "\n" + text.replace("\\\n", "")
     if rnd.random() < 0.15:
         env = "# env: LC_ALL=C\n"
         if any(ord(ch) > 127 for ch in text):
@@ -161,6 +164,7 @@ def run(seed_n):
             nonconf.add("mksh")              # byte lengths (cases/p_length.env)
     if nonconf:
         env += "# nonconforming: " + ",".join(sorted(nonconf)) + "\n"
+    text = raw
     fd, path = tempfile.mkstemp(suffix=".env", dir=WORK)
     with os.fdopen(fd, "wb") as f:
         f.write((env + text).encode())
